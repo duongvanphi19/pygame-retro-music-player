@@ -131,14 +131,14 @@ if APK: boot()
 os.environ["SDL_ANDROID_TRAP_BACK_BUTTON"] = "1"                 # nút Back gửi phím về app thay vì đóng ngay
 pygame.display.init(); pygame.font.init()                    # không pygame.init(): bỏ mixer trong UI (APK)
 from touchpad import TouchPad
-W, PH = 320, 196                                           # dải phím: hàng nút chức năng (trên) + vòng điều hướng (dưới) + lề đáy ~25px
+W, PH = 320, 202                                           # dải phím: hàng nút chức năng (trên) + vòng điều hướng (dưới) + lề đáy ~25px
 class Pad(TouchPad):
     def _want(s): return False, s.side                       # khoá chế độ dọc, bỏ layout ngang có 2 dải bên
 def fit_h(sw, sh): return max(400, min(900, round(W * sh / sw) - PH))
-BTNS = (("C", "", 90, 30), ("A", "", 170, 30), ("B", "", 250, 30), ("S", "", 170, 114))   # x bù +10 (touchpad trừ 10): C/A/B ở 80/160/240; S nằm giữa vòng điều hướng
-DP = (160, 114)                                              # tâm vòng điều hướng (trong dải phím)
+BTNS = (("S", "", 170, 22), ("A", "", 170, 112), ("C", "", 54, 112), ("B", "", 286, 112))   # x bù +10 (touchpad trừ 10): S trên cùng; A (play) ở tâm vòng; C/B hai bên vòng
+DP = (160, 112)                                              # tâm vòng điều hướng (trong dải phím)
 sw, sh = pygame.display.get_desktop_sizes()[0]
-pad = Pad(W, fit_h(sw, sh), buttons=BTNS, dpad=DP, cell=32, ph=PH, touch=True)
+pad = Pad(W, fit_h(sw, sh), buttons=BTNS, dpad=DP, cell=36, ph=PH, touch=True)
 def win_size():                                              # cửa sổ THẬT (SCALED: display.get_size() chỉ trả kích thước logic)
     try: return pygame.display.get_window_size()
     except Exception: return pygame.display.get_surface().get_size()
@@ -155,7 +155,7 @@ if APK:                                                      # ẩn thanh trạn
         for _ in range(12): pygame.event.pump(); pygame.time.wait(50)    # chờ cửa sổ đổi kích thước xong
     except Exception: pass
 ww, wh = win_size()
-if abs(fit_h(ww, wh) - pad.h) > 1: pad = Pad(W, fit_h(ww, wh), buttons=BTNS, dpad=DP, cell=32, ph=PH, touch=True)   # khớp tỉ lệ cửa sổ thật
+if abs(fit_h(ww, wh) - pad.h) > 1: pad = Pad(W, fit_h(ww, wh), buttons=BTNS, dpad=DP, cell=36, ph=PH, touch=True)   # khớp tỉ lệ cửa sổ thật
 S, H = pad.screen, pad.h
 
 def mkfont(sz, bold=False):                                  # font hệ thống Android có đủ dấu tiếng Việt
@@ -237,15 +237,21 @@ def find_lyrics(path, emb):                                  # -> (có_thời_gi
     return parse_lyrics(emb) + ("nhúng trong file",) if emb else (False, [], "")
 
 CTX = None
-def ssl_ctx():                                               # APK: OpenSSL không biết kho chứng chỉ của Android -> trỏ thẳng vào đó
+def ssl_ctx():                                               # APK: OpenSSL không tự biết kho chứng chỉ Android
     global CTX
     if CTX: return CTX
     import ssl
-    try: import certifi; CTX = ssl.create_default_context(cafile=certifi.where())
-    except Exception:
-        d = "/system/etc/security/cacerts"
-        CTX = ssl.create_default_context(capath=d) if os.path.isdir(d) else ssl.create_default_context()
-    return CTX
+    try: import certifi; CTX = ssl.create_default_context(cafile=certifi.where()); return CTX
+    except Exception: pass
+    c = ssl.create_default_context(); d = "/system/etc/security/cacerts"
+    try:                                                     # tên file kiểu hash cũ nên capath không dùng được -> đọc hết PEM nạp thẳng
+        pem = []
+        for f in os.listdir(d):
+            try: pem += re.findall(r"-----BEGIN CERTIFICATE-----.+?-----END CERTIFICATE-----", open(os.path.join(d, f), errors="ignore").read(), re.S)
+            except OSError: pass
+        if pem: c.load_verify_locations(cadata="\n".join(pem))
+    except OSError: pass
+    CTX = c; return c
 
 def fetch_lyrics(p, a, t):                                   # -> (có_thời_gian, dòng, nguồn) hoặc chuỗi báo lỗi
     try:
@@ -257,8 +263,8 @@ def fetch_lyrics(p, a, t):                                   # -> (có_thời_gi
         try: open(lrc_path(p), "w", encoding="utf-8").write(txt)
         except OSError: pass
         return parse_lyrics(txt) + ("lrclib.net",)
-    except urllib.error.HTTPError as e: return "lrclib: không có (%d)" % e.code
-    except Exception as e: return "lỗi mạng: " + str(e)[:40]
+    except urllib.error.HTTPError as e: return "lrclib: không có lời" if e.code == 404 else "lỗi mạng: máy chủ %d" % e.code
+    except Exception as e: return "lỗi mạng: " + type(e).__name__ + " " + str(e)[:40]
 
 def M0(): return dict(art=None, rg=0.0, ly="", len=0.0, title="", artist="", album="", albumartist="", date="", genre="",
                       track="", fmt="", br=0, sr=0, ch=0, bits=0)
@@ -517,7 +523,7 @@ def drain():
             if mi["len"] and not length: length = mi["len"]
             minfo = mi; build_info(); make_disc(mi["art"]); setvol()
             sr = m[3][2]                                     # kết quả tìm lyric -> thông báo rõ ràng
-            if sr.startswith("lỗi mạng"): toast("Không tải được lyric (lỗi mạng)", 2200)
+            if sr.startswith("lỗi mạng"): toast("Lỗi tải lyric: " + sr[10:], 3000)
             elif not lyr: toast("Không tìm thấy lyric hợp lệ", 2200)
             elif sr == "lrclib.net": toast("Đã tải lyric" + ("" if lsync else " (không đồng bộ)"), 2000)
 
@@ -555,6 +561,12 @@ def marq(s, col, font, x, y, w, ctr=False):                  # chữ vừa thì 
     ov = tw - w; ph = (now / 1000.0) % (ov / 40.0 + 2.4)     # đứng 1.2s ở đầu/cuối, chạy 40px/s
     o = S.get_clip(); S.set_clip(o.clip((x, y, w, sf.get_height())))
     blit(sf, (x - int(max(0.0, min(ov, (ph - 1.2) * 40))), y)); S.set_clip(o)
+
+def selbar(yb):                                              # thanh "đang chọn bài nào" (màn lời / màn thông tin)
+    draw_rect(S, (COLOR_ACC[0] // 5, COLOR_ACC[1] // 5, COLOR_ACC[2] // 5), (8, yb, 304, 22), border_radius=4)
+    #draw_rect(S, COLOR_ACC, (10, yb + 5, 3, 12), border_radius=1)
+    hint = T("A: phát", AMB); blit(hint, (306 - hint.get_width(), yb + 4))
+    marq("%d/%d  %s" % (sel + 1, N, names[sel]), COLOR_FG, F, 20, yb + 4, 306 - hint.get_width() - 28)
 
 def status():                                                # chế độ đang bật (hiện góc trên trang chính)
     s = []
@@ -658,11 +670,7 @@ while run:
                     fy = int(LCY + k * SLOT - y_off) + (SLOT - lh * len(ls)) // 2
                     for q, ln in enumerate(ls): centered(T(ln or " ", col, ft, max_w=300), fy + q * lh)
             set_clip(None)
-        if sel != cur:                                       # đang chọn bài khác bài đang phát -> báo ngay trên màn lời
-            yb = H - BM - 56; draw_rect(S, (COLOR_ACC[0] // 5, COLOR_ACC[1] // 5, COLOR_ACC[2] // 5), (8, yb, 304, 22), border_radius=4)
-            draw_rect(S, COLOR_ACC, (10, yb + 5, 3, 12), border_radius=1)
-            hint = T("A: phát", AMB); blit(hint, (306 - hint.get_width(), yb + 4))
-            marq("%d/%d  %s" % (sel + 1, N, names[sel]), COLOR_FG, F, 20, yb + 4, 306 - hint.get_width() - 28)
+        if sel != cur: selbar(H - BM - 56)                   # đang chọn bài khác bài đang phát -> báo ngay
         bar(20, H - BM - 30, 280, el / length if length else 0, COLOR_ACC)
         blit(T(mmss(el), AMB), (20, H - BM - 22))
         if length: t1 = T(mmss(length), COLOR_DIM); blit(t1, (300 - t1.get_width(), H - BM - 22))
@@ -697,7 +705,7 @@ while run:
             i = top + ri; y = LY0 + ri * 22
             if i == sel:
                 draw_rect(S, (COLOR_ACC[0] // 5, COLOR_ACC[1] // 5, COLOR_ACC[2] // 5), (8, y - 1, 300, 21), border_radius=4)
-                draw_rect(S, COLOR_ACC, (10, y + 4, 3, 10), border_radius=1)
+                #draw_rect(S, COLOR_ACC, (10, y + 4, 3, 10), border_radius=1)
             if i == cur and playing: draw_poly(S, AMB, [(17, y + 4), (17, y + 12), (24, y + 8)])
             if i == sel: marq(names[i], COLOR_FG, FB, 30, y + 1, 250)
             else: blit(T(names[i], COLOR_DIM, F, max_w=250), (30, y + 1))
@@ -717,12 +725,13 @@ while run:
                 if lb: blit(T(lb, COLOR_DIM), (14, y))
                 marq(val, COLOR_FG, F, 92, y, 216); y += 18
         yy = H - BM - 50                                     # chân trang cố định ở đáy, không bị đè
-        yl = min(y + 6, yy - 20)
+        if N and sel != cur: selbar(yy - 26)
+        yl = min(y + 6, yy - 30)
         blit(T("Service: " + ("đã nối" if got else "CHƯA NỐI"), AMB if got else COLOR_ACC, FB), (14, yl)); yl += 18
         if not got:                                          # chỉ khi lỗi mới hiện nhật ký, tối đa 2 dòng và không tràn xuống chân trang
             if now - svc_t > 1000: svc_t = now; svc_lines = svc_log()
             for ln in svc_lines[-2:]:
-                if yl + 13 <= yy - 2: blit(T(wrap(ln, 290, 1)[0] or " ", DIM2), (14, yl)); yl += 13
+                if yl + 13 <= yy - 28: blit(T(wrap(ln, 290, 1)[0] or " ", DIM2), (14, yl)); yl += 13
         blit(T("Hẹn giờ ngủ", COLOR_DIM), (14, yy)); blit(T("%d phút" % sl if sl else "TẮT", AMB), (92, yy))
         r_ = T("trái/phải", DIM2); blit(r_, (W - 14 - r_.get_width(), yy))
         centered(T("Giữ A thích · B ngẫu nhiên · C lặp lại", DIM2), yy + 18)

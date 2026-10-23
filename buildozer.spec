@@ -14,7 +14,7 @@ presplash.color = #0c0c10
 android.permissions = READ_MEDIA_AUDIO,READ_EXTERNAL_STORAGE,POST_NOTIFICATIONS,FOREGROUND_SERVICE,WAKE_LOCK,INTERNET
 
 # pygame/ndk/p4a giữ y như bản game đã build ok; thêm pyjnius, android (xin quyền) và mutagen (đọc tag)
-requirements = python3,pygame==2.1.2,pyjnius,android,mutagen
+requirements = python3,pygame==2.1.2,pyjnius,android,mutagen,openssl,certifi
 orientation = portrait
 fullscreen = 1
 android.archs = arm64-v8a

@@ -88,7 +88,7 @@ class TouchPad:
             pygame.draw.circle(ov_surf, (255, 255, 255, 15), (s.dpad_r + ox * s.dpad_r * 0.72, s.dpad_r + oy * s.dpad_r * 0.72), s.dpad_r * 0.4)
             s.ov[d] = (ov_surf, s.dpad_pos)
         for d, _, *_ in s.btn:
-            is_play = (d == "A"); tr = r + 4 if is_play else (r - 4 if d == "S" else r)
+            is_play = (d == "A"); tr = r + 5 if is_play else r
             L = []
             for col, icol in (((18, 18, 24), (180, 180, 200)), ((36, 36, 46), (255, 255, 255))):
                 L.append((s._draw_aa_button(d, tr, col, (40, 40, 50), icol, False), tr))
@@ -159,7 +159,7 @@ class TouchPad:
         for x, y in s.ptr.values():
             if SM <= x < SM + s.w and y < s.h: continue
             for n, (bx, by) in s.bp.items():
-                if (x - bx)**2 + (y - by)**2 < ((s.dpad_r * 0.45)**2 if n == "S" else hr_sq): 
+                if (x - bx)**2 + (y - by)**2 < ((s.dpad_r * 0.45)**2 if n == "A" else hr_sq): 
                     out.add(n); break
             else:
                 dx, dy = x - px, y - py
