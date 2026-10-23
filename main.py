@@ -383,19 +383,12 @@ def build_info():                                            # dựng sẵn 1 l�
     global info_rows
     m = minfo
     if not m: return
-    try: sz = os.path.getsize(curp) / 1048576.0
-    except OSError: sz = 0
-    kh = "%.1f kHz" % (m["sr"] / 1000.0) if m["sr"] else ""
-    rows = [("Tên", title), ("Nghệ sĩ", artist), ("Album", m["album"]), ("NS album", m["albumartist"]), ("Năm", m["date"]),
-            ("Thể loại", m["genre"]), ("Track", m["track"]), ("Thời lượng", mmss(length) if length else ""),
-            ("Định dạng", " · ".join(x for x in (m["fmt"], "%d bit" % m["bits"] if m["bits"] else "") if x)),
-            ("Bitrate", "%d kbps" % (m["br"] // 1000) if m["br"] else ""),
-            ("Lấy mẫu", " · ".join(x for x in (kh, "%d kênh" % m["ch"] if m["ch"] else "") if x)),
-            ("Dung lượng", "%.1f MB" % sz if sz else ""), ("ReplayGain", "%+.1f dB" % m["rg"] if m["rg"] else ""),
-            ("Bìa", "%d KB" % (len(m["art"]) // 1024) if m["art"] else "không có"),
-            ("Lời", lsrc + (" · đồng bộ" if lsync else " · không đồng bộ") if lyr else "không có")]
+    rows = [("Tên", title), ("Nghệ sĩ", artist), ("Album", m["album"]), ("Năm", m["date"]), ("Thể loại", m["genre"]),
+            ("Thời lượng", mmss(length) if length else ""),
+            ("Định dạng", " · ".join(x for x in (m["fmt"], "%d kbps" % (m["br"] // 1000) if m["br"] else "") if x)),
+            ("Lời", lsrc + (" · đồng bộ" if lsync else "") if lyr else "không có")]
     rows = [(a, b) for a, b in rows if b]
-    for i, ln in enumerate(wrap(curp, 220)): rows.append(("Đường dẫn" if i == 0 else "", ln))
+    for i, ln in enumerate(wrap(curp, 220, 2)): rows.append(("Đường dẫn" if i == 0 else "", ln))
     info_rows = rows
 
 def change():                                                # bài hiện tại đổi (do mình chọn hoặc service tự chuyển)
@@ -669,20 +662,17 @@ while run:
             for lb, val in info_rows:
                 if lb: blit(T(lb, COLOR_DIM), (14, y))
                 marq(val, COLOR_FG, F, 92, y, 216); y += 18
-        if now - svc_t > 1000: svc_t = now; svc_lines = svc_log()
-        yl = y + 10; blit(T("Service: " + ("đã nối" if got else "CHƯA NỐI"), AMB if got else COLOR_ACC, FB), (14, yl)); yl += 18
-        for ln in svc_lines:
-            for w_ in wrap(ln, 290, 2): blit(T(w_ or " ", DIM2), (14, yl)); yl += 13
-        yy = max(yl + 6, H - BM - 76)
+        yy = H - BM - 50                                     # chân trang cố định ở đáy, không bị đè
+        yl = min(y + 6, yy - 20)
+        blit(T("Service: " + ("đã nối" if got else "CHƯA NỐI"), AMB if got else COLOR_ACC, FB), (14, yl)); yl += 18
+        if not got:                                          # chỉ khi lỗi mới hiện nhật ký, tối đa 2 dòng và không tràn xuống chân trang
+            if now - svc_t > 1000: svc_t = now; svc_lines = svc_log()
+            for ln in svc_lines[-2:]:
+                if yl + 13 <= yy - 2: blit(T(wrap(ln, 290, 1)[0] or " ", DIM2), (14, yl)); yl += 13
         blit(T("Hẹn giờ ngủ", COLOR_DIM), (14, yy)); blit(T("%d phút" % sl if sl else "TẮT", AMB), (92, yy))
-        centered(T("Trái/phải: đổi hẹn giờ ngủ", DIM2), yy + 18)
-        centered(T("Giữ A thích · B ngẫu nhiên · C lặp lại", DIM2), yy + 36)
-        centered(T("Giữ S: thoát & dừng nhạc", DIM2), yy + 54)
-
-    if CFG["dbg"]:
-        t1 = "FPS %d | %s | %dx%d | bad %d" % (int(clock.get_fps()), "APK" if APK else "DEV", W, H, len(BAD))
-        #blit(T(t1, (10, 10, 10)), (7, 3)); blit(T(t1, (0, 255, 128)), (6, 2))
-        blit(T(scan_status, (10, 10, 10)), (7, 3)); blit(T(scan_status, (255, 200, 0)), (6, 2))
+        r_ = T("trái/phải", DIM2); blit(r_, (W - 14 - r_.get_width(), yy))
+        centered(T("Giữ A thích · B ngẫu nhiên · C lặp lại", DIM2), yy + 18)
+        centered(T("Giữ S: thoát & dừng nhạc", DIM2), yy + 34)
 
     if toast_t:                                              # thông báo nhỏ ở mọi trang
         tt = T(TOAST, (16, 16, 24), FB); rc = tt.get_rect(center=(160, H - BM - 16))
