@@ -21,13 +21,17 @@ SF, PL, CACHE, BADF = (os.path.join(DATA, n) for n in (".mp_state.json", "playli
 SP, UP = 41701, 41702
 ev = queue.Queue()                                           # thread nền -> vòng chính (không đụng global từ thread)
 kick = threading.Event()                                     # đánh thức bộ quét ngay
-try: BAD = set(json.load(open(BADF)))                        # bài phát lỗi: không liệt kê nữa
-except Exception: BAD = set()
+BAD = set()                                                  # bài phát lỗi: ẩn trong phiên này (mở lại app thì thử lại)
+FF = os.path.join(DATA, "fav.json")                          # danh sách yêu thích
+try: FAV = set(json.load(open(FF)))
+except Exception: FAV = set()
+ALL = []                                                     # thư viện đầy đủ (lib là bản đã lọc)
 
 # ====================================================================
 # BACKEND: service (APK, UDP localhost) hoặc Dev (Pydroid3, trong tiến trình)
 # ====================================================================
 class Dev:
+    shuf, rep = False, 1
     def __init__(s):
         s.rows, s.cur, s.curp, s.ready, s.paused, s.vol, s.base, s.sl_at, s.err, s.bad = [], 0, "", False, False, 0.7, 0.0, 0, None, None
         if "ANDROID_ROOT" in os.environ: pygame.mixer.quit(); os.environ["SDL_AUDIODRIVER"] = "openslES"
@@ -57,7 +61,8 @@ class Dev:
                 s.rows = json.load(open(PL)); ps = [r[0] for r in s.rows]
                 if s.curp in ps: s.cur = ps.index(s.curp)
             elif c == "play": s.load(d["i"], d.get("s", 0))
-            elif c == "next": s.load(s.cur + 1)
+            elif c == "next": s.load(s.pick())
+            elif c == "mode": s.shuf, s.rep = bool(d.get("sh")), int(d.get("rp", 1))
             elif c == "prev": s.load(s.cur - 1)
             elif c == "toggle":
                 if not s.ready: s.load(s.cur)
@@ -71,9 +76,19 @@ class Dev:
             elif c == "quit": m.stop()
         except Exception as e: s.err = "Loi: " + str(e)[:34]
 
+    def pick(s):
+        n = len(s.rows)
+        if s.shuf and n > 1: j = random.randrange(n - 1); return j + (j >= s.cur)
+        return s.cur + 1
+
+    def after(s):
+        if s.rep == 2: s.load(s.cur)
+        elif s.shuf or s.rep == 1 or s.cur + 1 < len(s.rows): s.load(s.pick())
+        else: s.paused = True
+
     def state(s):
         m = pygame.mixer.music
-        if s.ready and not s.paused and not m.get_busy(): s.load(s.cur + 1)       # hết bài -> bài kế
+        if s.ready and not s.paused and not m.get_busy(): s.after()       # hết bài -> bài kế
         if s.sl_at and time.time() >= s.sl_at:
             s.sl_at = 0
             if s.ready and not s.paused: m.pause(); s.paused = True
@@ -115,16 +130,16 @@ if APK: boot()
 # ====================================================================
 pygame.display.init(); pygame.font.init()                    # không pygame.init(): bỏ mixer trong UI (APK)
 from touchpad import TouchPad
-W, PH = 320, 112
+W, PH = 320, 140                                           # 112 + 28px chừa lề dưới cho dải phím
 class Pad(TouchPad):
     def _want(s): return False, s.side                       # khoá chế độ dọc, bỏ layout ngang có 2 dải bên
 def fit_h(sw, sh): return max(400, min(720, round(W * sh / sw) - PH))
 BTNS = (("C", "", 160, 56), ("A", "", 220, 56), ("B", "", 280, 56), ("S", "", 280, 10))
 sw, sh = pygame.display.get_desktop_sizes()[0]
-pad = Pad(W, fit_h(sw, sh), buttons=BTNS, touch=True)
+pad = Pad(W, fit_h(sw, sh), buttons=BTNS, dpad=(70, 56), touch=True)
 if not APK:                                                  # Pydroid: cửa sổ thật khác màn hình (thanh trạng thái) -> khớp lại
     ww, wh = pygame.display.get_surface().get_size()
-    if abs(fit_h(ww, wh) - pad.h) > 3: pad = Pad(W, fit_h(ww, wh), buttons=BTNS, touch=True)
+    if abs(fit_h(ww, wh) - pad.h) > 3: pad = Pad(W, fit_h(ww, wh), buttons=BTNS, dpad=(70, 56), touch=True)
 S, H = pad.screen, pad.h
 
 def mkfont(sz, bold=False):                                  # font hệ thống Android có đủ dấu tiếng Việt
@@ -177,7 +192,7 @@ def scanner():
         scan_status = "Đang quét..."
         try:
             rows = [r for r in (rows_mediastore() if APK else rows_walk()) if r[0] not in BAD]
-            if rows and rows != lib:                         # quét rỗng (chưa có quyền/thẻ chưa gắn) thì giữ danh sách cũ
+            if rows and rows != ALL:                         # quét rỗng (chưa có quyền/thẻ chưa gắn) thì giữ danh sách cũ
                 json.dump(rows, open(CACHE, "w")); ev.put(("lib", rows))
             scan_status = "Đã nạp %d bài" % len(rows)
         except Exception as e: scan_status = "Quét lỗi: " + str(e)[:24]
@@ -268,7 +283,7 @@ def bg_meta(p, a, t):
 # TRẠNG THÁI + ĐĨA XOAY
 # ====================================================================
 cur = sel = 0; vol = 0.7; curp = ""; rpos = 0.0
-CFG = {"thm": True, "dbg": False}
+CFG = {"thm": True, "dbg": False, "shuf": False, "rep": 1, "fav": False}   # rep: 0 tắt, 1 tất cả, 2 một bài
 try:
     st = json.load(open(SF)); vol = float(st["v"]); curp = st.get("t", ""); rpos = float(st.get("p", 0))
     CFG.update(st.get("cfg", {}))
@@ -281,11 +296,15 @@ def save():
 
 BGC = (12, 12, 16)                                           # trùng màu dải phím => liền mạch
 BG = pygame.Surface((W, H)).convert(); BG.fill(BGC)
+BGT = (44, 38, 64)                                           # màu đỉnh; xuống đáy chuyển dần về BGC để liền mạch với dải phím
+for _y in range(H):
+    _k = (_y / H) ** 2; BG.fill(tuple(int(BGT[i] + (BGC[i] - BGT[i]) * _k) for i in range(3)), (0, _y, W, 1))
 MASK = pygame.Surface((48, 48), pygame.SRCALPHA); pygame.draw.circle(MASK, (255, 255, 255, 255), (24, 24), 24)
 OVL = pygame.Surface((W, H), pygame.SRCALPHA); OVL.fill((10, 10, 14, 245))
 frames = [None] * 72; D0 = None; ART = None
-COLOR_ACC, COLOR_FG, COLOR_DIM, COLOR_OFF = (255, 110, 150), (240, 240, 250), (120, 120, 130), (30, 30, 40)
-DIM2, DIM3 = (60, 60, 65), (40, 40, 44)
+COLOR_ACC, COLOR_FG, COLOR_DIM, COLOR_OFF = (255, 110, 150), (240, 240, 250), (145, 142, 160), (56, 52, 76)
+DIM2, DIM3 = (100, 98, 118), (72, 70, 90)
+AMB, RING, RED = (255, 190, 70), (84, 64, 30), (255, 80, 70)   # màu nhấn thứ hai: hổ phách
 
 def make_disc(art):
     global D0, frames, COLOR_ACC, COLOR_FG, ART
@@ -319,7 +338,7 @@ def T(s, col, font=F, max_w=0):
         s += "..."
     k = (s, col, id(font))
     if k not in cache:
-        if len(cache) > 240: cache.clear()
+        if len(cache) > 500: cache.clear()
         cache[k] = font.render(s, True, col).convert_alpha()
     return cache[k]
 def mmss(s): s = int(s); return "%02d:%02d" % (s // 60, s % 60)
@@ -334,13 +353,29 @@ def wrap(s, w, n=4):                                         # ngắt dòng theo
 NB = 38
 BX = [8 + i * 8 for i in range(NB)]
 BW = [1.0 - abs(i - 19) / 40.0 for i in range(NB)]
+wc = {}
+def wrapw(s, font, w, n=2):                                  # ngắt dòng theo từ, tối đa n dòng (lời bài hát dài)
+    k = (s, id(font))
+    if k in wc: return wc[k]
+    if len(wc) > 300: wc.clear()
+    out, c = [], ""
+    for wd in s.split():
+        t = c + " " + wd if c else wd
+        if font.size(t)[0] <= w: c = t
+        else:
+            if c: out.append(c)
+            c = wd
+    out.append(c)
+    if len(out) > n: out = out[:n]; out[-1] += "..."
+    wc[k] = out; return out
+
 playing = paused = False; vol_t = -9999; hold = {}; used = set()
 title = artist = MSG = lsrc = ""; length = rg = pos = 0.0; st_t = 0; sl = 0
 lsync = lymode = info = lbusy = False; lyr = []; ltimes = []; minfo = info_rows = None
-pend, got, fails = True, False, 0                            # pend: tự phát bài trước đó khi mở app
-bars, tgt = [0.0] * NB, [0.0] * NB
+TOAST = ""
+pend, got, fails, lastpl, toast_t, page = True, False, 0, 0, 0, 0
+bars, tgt = [0.0] * NB, [0.0] * NB                            # pend: tự phát bài trước đó khi mở app
 make_disc(None)
-particles = [[random.randint(10, 310), random.randint(0, H), random.random() * 0.5 + 0.2, random.randint(1, 3)] for _ in range(25)]
 
 def setvol(): tx("vol", v=min(1.0, vol * 10 ** (rg / 20)))
 
@@ -373,11 +408,12 @@ def change():                                                # bài hiện tại
     threading.Thread(target=bg_meta, args=(curp, artist, names[cur]), daemon=True).start()
 
 def set_lib(rows):
-    global tracks, names, lib, idx, N, cur, sel
-    old = curp; lib = [r for r in rows if r[0] not in BAD]; tracks = [r[0] for r in lib]
+    global tracks, names, lib, idx, N, cur, sel, ALL
+    old = curp; selp = tracks[sel] if N and sel < N else ""; ALL = rows
+    lib = [r for r in rows if r[0] not in BAD and (not CFG["fav"] or r[0] in FAV)]; tracks = [r[0] for r in lib]
     names = [r[1] or os.path.splitext(os.path.basename(r[0]))[0] for r in lib]
     idx = {t: i for i, t in enumerate(tracks)}; N = len(tracks)
-    cur = sel = idx.get(old, min(cur, max(N - 1, 0)))
+    cur = idx.get(old, min(cur, max(N - 1, 0))); sel = idx.get(selp, cur)   # giữ nguyên bài đang chọn khi danh sách đổi
     try: json.dump([[r[0], names[i], r[2]] for i, r in enumerate(lib)], open(PL, "w"))
     except OSError: pass
     tx("pl"); setvol()
@@ -389,19 +425,39 @@ def drop_bad(p):                                             # bài lỗi: ẩn 
     fails += 1
     if fails > 3: return                                     # lỗi hàng loạt (mất quyền, thẻ nhớ...) -> đừng ẩn nhầm cả thư viện
     i = idx[p]; BAD.add(p)
-    try: json.dump(sorted(BAD), open(BADF, "w"))
-    except OSError: pass
-    set_lib(lib)
+    set_lib(ALL)
     if N: tx("play", i=i % N)
 
+def send_mode(): tx("mode", sh=int(bool(CFG["shuf"])), rp=int(CFG["rep"]))
+
+def toast(s):
+    global TOAST, toast_t
+    TOAST = s; toast_t = pygame.time.get_ticks() + 1600
+
+def toggle_fav(p):                                           # giữ A: thích / bỏ thích
+    FAV.symmetric_difference_update({p})
+    try: json.dump(sorted(FAV), open(FF, "w"))
+    except OSError: pass
+    toast("Đã thêm vào yêu thích" if p in FAV else "Đã bỏ yêu thích")
+    if CFG["fav"] and p not in FAV: set_lib(ALL)
+
+def set_favfilter(v):                                        # giữ S: chỉ phát bài yêu thích
+    old = curp; CFG["fav"] = v; set_lib(ALL); save()
+    if N and playing and old != curp: tx("play", i=cur)      # bài đang phát nằm ngoài danh sách mới -> chuyển sang bài đầu
+    toast("Chỉ hiện yêu thích" if v else "Hiện tất cả bài")
+
 def poll(now):                                               # đọc hết gói, chỉ giữ trạng thái mới nhất
-    global playing, paused, pos, st_t, sl, cur, sel, length, MSG, pend, got, fails
+    global playing, paused, pos, st_t, sl, cur, sel, length, MSG, pend, got, fails, lastpl
     last = None
     for d in recv_all():
         if "e" in d:
             if d.get("bad"): drop_bad(d["bad"])
             MSG = d["e"]
         else: last = d
+    if not got:                                              # service khởi động chậm: gói đầu có thể mất -> gửi lại danh sách
+        if now - lastpl > 1000: lastpl = now; tx("pl"); send_mode()
+        if now > 6000 and not MSG: MSG = "Không nối được service"
+    elif MSG == "Không nối được service": MSG = ""
     if last:
         got = True
         playing, paused, pos, st_t, sl = bool(last["pl"]), bool(last["pa"]), last["p"], now, last["sl"]
@@ -430,7 +486,7 @@ def drain():
 try: set_lib(json.load(open(CACHE)))                         # hiện ngay danh sách đã nhớ, quét ngầm sau
 except Exception: pass
 threading.Thread(target=scanner, daemon=True).start()
-tx("pl"); setvol()
+tx("pl"); setvol(); send_mode()
 
 # ====================================================================
 # VÒNG LẶP CHÍNH
@@ -439,14 +495,25 @@ clock, run = pygame.time.Clock(), True
 get_ticks, get_events, blit = pygame.time.get_ticks, pygame.event.get, S.blit
 draw_rect, draw_circle, draw_poly, set_clip = pygame.draw.rect, pygame.draw.circle, pygame.draw.polygon, S.set_clip
 randint, rd = random.randint, random.random
-ui_state, set_idx, ang, t_save = 0, 0, 0.0, 0
-SET_ITEMS = ["Màu nền bìa", "Thông số Debug", "Hẹn giờ ngủ", "Hiện lại bài lỗi", "Thoát & dừng nhạc"]
+ang, t_save = 0.0, 0
 SLP = (0, 15, 30, 60); slp_i = 0
-Y0 = 18                                                      # chừa vùng tai thỏ/thanh trạng thái
+Y0, BM = 36, 26                                                      # chừa vùng tai thỏ/thanh trạng thái
 DCY, BY, TY, AY, PY, LY0 = Y0 + 46, Y0 + 112, Y0 + 126, Y0 + 148, Y0 + 182, Y0 + 216
-LN = (H - LY0 - 6) // 22                                     # số dòng danh sách hiển thị
-LT, LB = Y0 + 48, H - 44                                     # vùng lời bài hát
-LCY = (LT + LB) // 2 - 12; LSIDE = min(7, (LB - LT) // 52)
+LN = (H - LY0 - BM) // 22                                     # số dòng danh sách hiển thị
+LT, LB = Y0 + 48, H - BM - 40                                     # vùng lời bài hát
+SLOT = 40; LCY = (LT + LB - SLOT) // 2; LSIDE = min(5, ((LB - LT) // SLOT - 1) // 2)
+
+def heart(x, y, col):
+    draw_circle(S, col, (x - 2, y), 2); draw_circle(S, col, (x + 2, y), 2); draw_poly(S, col, [(x - 4, y + 1), (x + 4, y + 1), (x, y + 6)])
+
+def status():                                                # chế độ đang bật (hiện góc trên trang chính)
+    s = []
+    if CFG["shuf"]: s.append("SHUF")
+    if CFG["rep"] == 2: s.append("REP 1")
+    elif CFG["rep"] == 0: s.append("NO REP")
+    if CFG["fav"]: s.append("FAV")
+    if sl: s.append("ZZ %dm" % sl)
+    return "  ".join(s)
 
 def centered(surf, y): blit(surf, (160 - surf.get_width() // 2, y))
 def bar(x, y, w, frac, col):
@@ -459,6 +526,7 @@ while run:
         if e.type == pygame.QUIT: run = False                # thoát UI, nhạc vẫn chạy nhờ service
         pad.event(e)
     poll(now); drain()
+    if toast_t and now > toast_t: toast_t = 0
     pad.update(); p = set(pad.pressed)
     on = playing and not paused
     pad.st["A"] = 2 if on else 0
@@ -467,51 +535,48 @@ while run:
     if playing: lastpos = el
     if on and now - t_save > 5000: t_save = now; save()     # nhớ vị trí phát
 
-    if info and p: info = False; used |= p; p = set()        # chạm phím bất kỳ để đóng bảng thông tin
-    if "S" in p: ui_state = 1 - ui_state; set_idx = 0
+    if "S" in p: hold["S"] = now; used.discard("S")          # S: chạm = chuyển trang (Chính -> Lời -> Thông tin); giữ = yêu thích-lọc / thoát
+    if "S" in pad.held and "S" not in used and now - hold.get("S", now) > 500:
+        used.add("S")
+        if page == 2: tx("quit"); run = False                # trang thông tin: giữ S = thoát & dừng nhạc
+        else: set_favfilter(not CFG["fav"])
+    if "S" in pad.released and "S" not in used: page = (page + 1) % 3; lymode, info = page == 1, page == 2
 
-    if ui_state == 1:
-        if "down" in p: set_idx = (set_idx + 1) % 5
-        if "up" in p: set_idx = (set_idx - 1) % 5
-        if "A" in p or "right" in p or "left" in p:
-            if set_idx == 0: CFG["thm"] = not CFG["thm"]; make_disc(ART)
-            elif set_idx == 1: CFG["dbg"] = not CFG["dbg"]
-            elif set_idx == 2: slp_i = (slp_i + 1) % 4; tx("sleep", m=SLP[slp_i])
-            elif set_idx == 3 and "A" in p:
-                BAD.clear(); fails = 0; kick.set()
-                try: os.remove(BADF)
-                except OSError: pass
-            elif set_idx == 4 and "A" in p: tx("quit"); run = False
-            save()
-    else:
-        if "A" in p and N: tx("toggle") if (playing and sel == cur) else tx("play", i=sel)
-        for k in ("B", "C"):                                 # chạm = chuyển bài; giữ 0.5s: B = lời bài hát, C = thông tin bài
-            if k in p: hold[k] = now; used.discard(k)
-            if k in pad.held and k not in used and now - hold.get(k, now) > 500:
-                used.add(k)
-                if k == "B": lymode = not lymode
-                else: info = True
-            if k in pad.released and k not in used: tx("next" if k == "B" else "prev")
-        if "down" in p and N: sel = (sel + 1) % N
-        if "up" in p and N: sel = (sel - 1) % N
-        for k, dv in (("left", -1), ("right", 1)):
-            if k in p: hold[k] = now; used.discard(k)
-            if k in pad.held and now - hold.get(k, now) > 200: used.add(k); vol = min(1.0, max(0.0, vol + dv * 0.02)); setvol(); vol_t = now
-            if k in pad.released:
-                if k not in used: tx("seek", d=10 * dv)
-                else: save()
+    for k in ("A", "B", "C"):                                # chạm = hành động; giữ 0.5s: A = yêu thích, B = ngẫu nhiên, C = lặp lại
+        if k in p: hold[k] = now; used.discard(k)
+        if k in pad.held and k not in used and now - hold.get(k, now) > 500:
+            used.add(k)
+            if k == "A":
+                if N: toggle_fav(tracks[sel])
+            elif k == "B": CFG["shuf"] = not CFG["shuf"]; send_mode(); save(); toast("Ngẫu nhiên: " + ("BẬT" if CFG["shuf"] else "TẮT"))
+            else: CFG["rep"] = (CFG["rep"] + 1) % 3; send_mode(); save(); toast("Lặp lại: " + ("TẮT", "TẤT CẢ", "1 BÀI")[CFG["rep"]])
+        if k in pad.released and k not in used:
+            if k == "A":
+                if N: tx("toggle") if (playing and sel == cur) else tx("play", i=sel)
+            else: tx("next" if k == "B" else "prev")
+    if "down" in p and N: sel = (sel + 1) % N
+    if "up" in p and N: sel = (sel - 1) % N
+    for k, dv in (("up", -1), ("down", 1)):                  # giữ lên/xuống: cuộn nhanh, giữ lâu: nhảy 10 bài
+        if k in p: hold[k] = hold[k + "r"] = now
+        if k in pad.held and N and k in hold and now - hold[k] > 350 and now - hold[k + "r"] > 70:
+            hold[k + "r"] = now; sel = (sel + dv * (10 if now - hold[k] > 1500 else 1)) % N
+    for k, dv in (("left", -1), ("right", 1)):
+        if k in p: hold[k] = now; used.discard(k)
+        if page == 2:                                        # trang thông tin: trái/phải = hẹn giờ ngủ
+            if k in p: slp_i = (slp_i + dv) % 4; tx("sleep", m=SLP[slp_i])
+            continue
+        if k in pad.held and now - hold.get(k, now) > 200: used.add(k); vol = min(1.0, max(0.0, vol + dv * 0.02)); setvol(); vol_t = now
+        if k in pad.released:
+            if k not in used: tx("seek", d=10 * dv)
+            else: save()
 
     blit(BG, (0, 0))
     if on: ang = (ang + dt * 0.06) % 72                      # theo thời gian, không phụ thuộc fps
 
     if N and lymode:
         # ---------------- MÀN HÌNH LỜI BÀI HÁT ----------------
-        for q in particles:
-            q[1] -= q[2]
-            if q[1] < 0: q[0], q[1], q[2] = randint(10, 310), H, rd() * 0.5 + 0.2
-            draw_circle(S, COLOR_ACC, (int(q[0]), int(q[1])), q[3])
         centered(T(title, COLOR_FG, FB, max_w=296), Y0)
-        if artist: centered(T(artist, COLOR_DIM, max_w=296), Y0 + 20)
+        if artist: centered(T(artist, AMB, max_w=296), Y0 + 20)
         if not lyr:
             msg = "Đang tìm lời bài hát" + "." * (1 + now // 400 % 3) if lbusy else "Không có lời bài hát"
             centered(T(msg, COLOR_ACC if lbusy else COLOR_DIM), LCY)
@@ -523,26 +588,30 @@ while run:
                     dur = ltimes[i + 1] - ltimes[i]
                     if dur > 0:
                         pg = (el - ltimes[i]) / dur
-                        if pg > 0.7: pr = (pg - 0.7) / 0.3; y_off = pr * pr * (3.0 - 2.0 * pr) * 26
+                        if pg > 0.7: pr = (pg - 0.7) / 0.3; y_off = pr * pr * (3.0 - 2.0 * pr) * SLOT
             else: i = min(n - 1, int(el / length * n)) if length else 0
             set_clip((0, LT, W, LB - LT))
             for k in range(-LSIDE, LSIDE + 1):
                 j = i + k
                 if 0 <= j < n:
-                    fy = int(LCY + k * 26 - y_off)
                     ak = abs(k)
                     if k == 0: col, ft = COLOR_FG, FB
                     elif ak == 1: col, ft = COLOR_ACC, F
                     else: col, ft = (DIM2 if ak == 2 else DIM3), F
-                    centered(T(lyr[j][1] or " ", col, ft, max_w=300), fy)
+                    ls = wrapw(lyr[j][1] or " ", ft, 300); lh = ft.get_linesize()
+                    fy = int(LCY + k * SLOT - y_off) + (SLOT - lh * len(ls)) // 2
+                    for q, ln in enumerate(ls): centered(T(ln or " ", col, ft, max_w=300), fy + q * lh)
             set_clip(None)
-        bar(20, H - 30, 280, el / length if length else 0, COLOR_ACC)
-        blit(T(mmss(el), COLOR_DIM), (20, H - 22))
-        if length: t1 = T(mmss(length), COLOR_DIM); blit(t1, (300 - t1.get_width(), H - 22))
+        bar(20, H - BM - 30, 280, el / length if length else 0, COLOR_ACC)
+        blit(T(mmss(el), AMB), (20, H - BM - 22))
+        if length: t1 = T(mmss(length), COLOR_DIM); blit(t1, (300 - t1.get_width(), H - BM - 22))
 
     elif N:
         # ---------------- MÀN HÌNH CHÍNH ----------------
         d = frame(int(ang)); blit(d, d.get_rect(center=(160, DCY)))
+        draw_circle(S, RING, (160, DCY), 44, 1)
+        st_ = status()
+        if st_: blit(T(st_, AMB), (20, Y0 - 18))
         beat_force = (vol * (1.0 + (rg / 20.0))) if on else 0.0
         for i in range(NB):
             if on:
@@ -554,56 +623,52 @@ while run:
                 draw_rect(S, COLOR_OFF, (BX[i], BY - h, 2, h))
                 if on and h > 8: draw_rect(S, COLOR_ACC, (BX[i], BY - h, 2, 2))
         centered(T(title, COLOR_FG, FB, max_w=296), TY)
-        if MSG or artist: centered(T(MSG or artist, COLOR_ACC if MSG else COLOR_DIM, max_w=296), AY)
+        if curp in FAV: heart(300, Y0 - 12, COLOR_ACC)
+        if MSG or artist: centered(T(MSG or artist, COLOR_ACC if MSG else AMB, max_w=296), AY)
         showv = now - vol_t < 1200
         bar(20, PY, 280, vol if showv else (el / length if length else 0), COLOR_FG if showv else COLOR_ACC)
         if showv: centered(T("Âm lượng %d%%" % int(vol * 100), COLOR_FG), PY + 8)
         else:
-            blit(T(mmss(el), COLOR_DIM), (20, PY + 8)); centered(T("%d / %d" % (cur + 1, N), COLOR_DIM), PY + 8)
+            blit(T(mmss(el), AMB), (20, PY + 8)); centered(T("%d / %d" % (cur + 1, N), COLOR_DIM), PY + 8)
             if length: t1 = T(mmss(length), COLOR_DIM); blit(t1, (300 - t1.get_width(), PY + 8))
-        pygame.draw.line(S, COLOR_OFF, (12, LY0 - 6), (308, LY0 - 6))
         top = max(0, min(sel - LN // 2, N - LN))
         for ri in range(min(LN, N)):
             i = top + ri; y = LY0 + ri * 22
             if i == sel:
                 draw_rect(S, (COLOR_ACC[0] // 5, COLOR_ACC[1] // 5, COLOR_ACC[2] // 5), (8, y - 1, 300, 21), border_radius=4)
-                draw_rect(S, COLOR_ACC, (10, y + 4, 3, 10), border_radius=1)
-            if i == cur and playing: draw_poly(S, COLOR_ACC, [(17, y + 4), (17, y + 12), (24, y + 8)])
-            blit(T(names[i], COLOR_FG if i == sel else COLOR_DIM, FB if i == sel else F, max_w=268), (30, y + 1))
+                #draw_rect(S, COLOR_ACC, (10, y + 4, 3, 10), border_radius=1)
+            if i == cur and playing: draw_poly(S, AMB, [(17, y + 4), (17, y + 12), (24, y + 8)])
+            blit(T(names[i], COLOR_FG if i == sel else COLOR_DIM, FB if i == sel else F, max_w=250), (30, y + 1))
+            if tracks[i] in FAV: heart(298, y + 6, COLOR_ACC)
         if N > LN:                                           # thanh cuộn mảnh
             trk = LN * 22; th = max(10, trk * LN // N)
-            draw_rect(S, COLOR_OFF, (315, LY0, 2, trk)); draw_rect(S, COLOR_ACC, (315, LY0 + (trk - th) * top // (N - LN), 2, th))
+            draw_rect(S, COLOR_OFF, (312, LY0, 2, trk)); draw_rect(S, COLOR_ACC, (312, LY0 + (trk - th) * top // (N - LN), 2, th))
     else:
-        centered(T(scan_status, COLOR_DIM), H // 2 - 8)
+        centered(T("Chưa có bài yêu thích" if CFG["fav"] and ALL else scan_status, COLOR_DIM), H // 2 - 8)
 
     if info:
         blit(OVL, (0, 0)); centered(T("THÔNG TIN BÀI HÁT", COLOR_FG, FB), Y0)
+        y = Y0 + 32
         if not info_rows: centered(T("Đang đọc thẻ nhạc...", COLOR_DIM), Y0 + 40)
         else:
-            y = Y0 + 32
             for lb, val in info_rows:
                 if lb: blit(T(lb, COLOR_DIM), (14, y))
                 blit(T(val, COLOR_FG, max_w=216), (92, y)); y += 18
-        centered(T("Chạm phím bất kỳ để đóng", DIM2), H - 22)
+        yy = max(y + 8, H - BM - 76)
+        blit(T("Hẹn giờ ngủ", COLOR_DIM), (14, yy)); blit(T("%d phút" % sl if sl else "TẮT", AMB), (92, yy))
+        centered(T("Trái/phải: đổi hẹn giờ ngủ", DIM2), yy + 18)
+        centered(T("Giữ A thích · B ngẫu nhiên · C lặp lại", DIM2), yy + 36)
+        centered(T("Giữ S: thoát & dừng nhạc", DIM2), yy + 54)
 
-    if ui_state == 1:
-        blit(OVL, (0, 0)); centered(T("CÀI ĐẶT", COLOR_FG, FB), Y0)
-        for i, txt in enumerate(SET_ITEMS):
-            if i == 2: v_str, is_on = ("%d Phút" % sl, True) if sl > 0 else ("TẮT", False)
-            elif i == 3: v_str, is_on = ("%d bài" % len(BAD), len(BAD) > 0)
-            elif i == 4: v_str, is_on = "", False
-            else: is_on = CFG[("thm", "dbg")[i]]; v_str = "BẬT" if is_on else "TẮT"
-            y = Y0 + 44 + i * 38
-            if i == set_idx: draw_rect(S, (COLOR_ACC[0] // 5, COLOR_ACC[1] // 5, COLOR_ACC[2] // 5), (14, y - 6, 292, 30), border_radius=4)
-            blit(T(txt, COLOR_ACC if i == set_idx else COLOR_DIM, FB if i == set_idx else F), (26, y))
-            if v_str: vs = T(v_str, COLOR_FG if is_on else COLOR_DIM, FB); blit(vs, (W - 26 - vs.get_width(), y))
-
-    if CFG["dbg"]:
+    if CFG["dbg"] &0:
         t1 = "FPS %d | %s | %dx%d | bad %d" % (int(clock.get_fps()), "APK" if APK else "DEV", W, H, len(BAD))
         blit(T(t1, (10, 10, 10)), (7, 3)); blit(T(t1, (0, 255, 128)), (6, 2))
         blit(T(scan_status, (10, 10, 10)), (7, 17)); blit(T(scan_status, (255, 200, 0)), (6, 16))
 
+    if toast_t:                                              # thông báo nhỏ ở mọi trang
+        tt = T(TOAST, (16, 16, 24), FB); rc = tt.get_rect(center=(160, H - BM - 16))
+        draw_rect(S, AMB, rc.inflate(18, 8), border_radius=8); blit(tt, rc)
     pad.present()
-    clock.tick(60 if (pad.ptr or ui_state == 1) else 30)     # rảnh thì 30fps cho nhẹ pin
+    clock.tick(60 if pad.ptr else 30)     # rảnh thì 30fps cho nhẹ pin
 
 save(); pygame.quit(); sys.exit()
