@@ -506,6 +506,13 @@ SLOT = 40; LCY = (LT + LB - SLOT) // 2; LSIDE = min(5, ((LB - LT) // SLOT - 1) /
 def heart(x, y, col):
     draw_circle(S, col, (x - 2, y), 2); draw_circle(S, col, (x + 2, y), 2); draw_poly(S, col, [(x - 4, y + 1), (x + 4, y + 1), (x, y + 6)])
 
+def marq(s, col, font, x, y, w, ctr=False):                  # chữ vừa thì vẽ thường; dài thì chạy ngang trong khung w
+    sf = T(s, col, font); tw = sf.get_width()
+    if tw <= w: blit(sf, (x + (w - tw) // 2 if ctr else x, y)); return
+    ov = tw - w; ph = (now / 1000.0) % (ov / 40.0 + 2.4)     # đứng 1.2s ở đầu/cuối, chạy 40px/s
+    o = S.get_clip(); S.set_clip(o.clip((x, y, w, sf.get_height())))
+    blit(sf, (x - int(max(0.0, min(ov, (ph - 1.2) * 40))), y)); S.set_clip(o)
+
 def status():                                                # chế độ đang bật (hiện góc trên trang chính)
     s = []
     if CFG["shuf"]: s.append("SHUF")
@@ -575,8 +582,8 @@ while run:
 
     if N and lymode:
         # ---------------- MÀN HÌNH LỜI BÀI HÁT ----------------
-        centered(T(title, COLOR_FG, FB, max_w=296), Y0)
-        if artist: centered(T(artist, AMB, max_w=296), Y0 + 20)
+        marq(title, COLOR_FG, FB, 12, Y0, 296, True)
+        if artist: marq(artist, AMB, F, 12, Y0 + 20, 296, True)
         if not lyr:
             msg = "Đang tìm lời bài hát" + "." * (1 + now // 400 % 3) if lbusy else "Không có lời bài hát"
             centered(T(msg, COLOR_ACC if lbusy else COLOR_DIM), LCY)
@@ -622,9 +629,9 @@ while run:
             if h > 0:
                 draw_rect(S, COLOR_OFF, (BX[i], BY - h, 2, h))
                 if on and h > 8: draw_rect(S, COLOR_ACC, (BX[i], BY - h, 2, 2))
-        centered(T(title, COLOR_FG, FB, max_w=296), TY)
+        marq(title, COLOR_FG, FB, 12, TY, 296, True)
         if curp in FAV: heart(300, Y0 - 12, COLOR_ACC)
-        if MSG or artist: centered(T(MSG or artist, COLOR_ACC if MSG else AMB, max_w=296), AY)
+        if MSG or artist: marq(MSG or artist, COLOR_ACC if MSG else AMB, F, 12, AY, 296, True)
         showv = now - vol_t < 1200
         bar(20, PY, 280, vol if showv else (el / length if length else 0), COLOR_FG if showv else COLOR_ACC)
         if showv: centered(T("Âm lượng %d%%" % int(vol * 100), COLOR_FG), PY + 8)
@@ -638,7 +645,8 @@ while run:
                 draw_rect(S, (COLOR_ACC[0] // 5, COLOR_ACC[1] // 5, COLOR_ACC[2] // 5), (8, y - 1, 300, 21), border_radius=4)
                 #draw_rect(S, COLOR_ACC, (10, y + 4, 3, 10), border_radius=1)
             if i == cur and playing: draw_poly(S, AMB, [(17, y + 4), (17, y + 12), (24, y + 8)])
-            blit(T(names[i], COLOR_FG if i == sel else COLOR_DIM, FB if i == sel else F, max_w=250), (30, y + 1))
+            if i == sel: marq(names[i], COLOR_FG, FB, 30, y + 1, 250)
+            else: blit(T(names[i], COLOR_DIM, F, max_w=250), (30, y + 1))
             if tracks[i] in FAV: heart(298, y + 6, COLOR_ACC)
         if N > LN:                                           # thanh cuộn mảnh
             trk = LN * 22; th = max(10, trk * LN // N)
@@ -653,7 +661,7 @@ while run:
         else:
             for lb, val in info_rows:
                 if lb: blit(T(lb, COLOR_DIM), (14, y))
-                blit(T(val, COLOR_FG, max_w=216), (92, y)); y += 18
+                marq(val, COLOR_FG, F, 92, y, 216); y += 18
         yy = max(y + 8, H - BM - 76)
         blit(T("Hẹn giờ ngủ", COLOR_DIM), (14, yy)); blit(T("%d phút" % sl if sl else "TẮT", AMB), (92, yy))
         centered(T("Trái/phải: đổi hẹn giờ ngủ", DIM2), yy + 18)
