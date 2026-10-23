@@ -496,6 +496,7 @@ get_ticks, get_events, blit = pygame.time.get_ticks, pygame.event.get, S.blit
 draw_rect, draw_circle, draw_poly, set_clip = pygame.draw.rect, pygame.draw.circle, pygame.draw.polygon, S.set_clip
 randint, rd = random.randint, random.random
 ang, t_save = 0.0, 0
+svc_lines, svc_t = [], -9999
 SLP = (0, 15, 30, 60); slp_i = 0
 Y0, BM = 36, 26                                                      # chừa vùng tai thỏ/thanh trạng thái
 DCY, BY, TY, AY, PY, LY0 = Y0 + 46, Y0 + 112, Y0 + 126, Y0 + 148, Y0 + 182, Y0 + 216
@@ -505,6 +506,10 @@ SLOT = 40; LCY = (LT + LB - SLOT) // 2; LSIDE = min(5, ((LB - LT) // SLOT - 1) /
 
 def heart(x, y, col):
     draw_circle(S, col, (x - 2, y), 2); draw_circle(S, col, (x + 2, y), 2); draw_poly(S, col, [(x - 4, y + 1), (x + 4, y + 1), (x, y + 6)])
+
+def svc_log():                                               # vài dòng cuối nhật ký của service
+    try: return open(os.path.join(DATA, "svc.log"), encoding="utf-8", errors="ignore").read()[-500:].strip().split("\n")[-4:]
+    except OSError: return ["(chưa có svc.log: service chưa chạy)"]
 
 def marq(s, col, font, x, y, w, ctr=False):                  # chữ vừa thì vẽ thường; dài thì chạy ngang trong khung w
     sf = T(s, col, font); tw = sf.get_width()
@@ -559,7 +564,9 @@ while run:
             else: CFG["rep"] = (CFG["rep"] + 1) % 3; send_mode(); save(); toast("Lặp lại: " + ("TẮT", "TẤT CẢ", "1 BÀI")[CFG["rep"]])
         if k in pad.released and k not in used:
             if k == "A":
-                if N: tx("toggle") if (playing and sel == cur) else tx("play", i=sel)
+                if N:
+                    if not got: toast("Service chưa nối (xem trang Thông tin)")
+                    tx("toggle") if (playing and sel == cur) else tx("play", i=sel)
             else: tx("next" if k == "B" else "prev")
     if "down" in p and N: sel = (sel + 1) % N
     if "up" in p and N: sel = (sel - 1) % N
@@ -643,7 +650,7 @@ while run:
             i = top + ri; y = LY0 + ri * 22
             if i == sel:
                 draw_rect(S, (COLOR_ACC[0] // 5, COLOR_ACC[1] // 5, COLOR_ACC[2] // 5), (8, y - 1, 300, 21), border_radius=4)
-                #draw_rect(S, COLOR_ACC, (10, y + 4, 3, 10), border_radius=1)
+                draw_rect(S, COLOR_ACC, (10, y + 4, 3, 10), border_radius=1)
             if i == cur and playing: draw_poly(S, AMB, [(17, y + 4), (17, y + 12), (24, y + 8)])
             if i == sel: marq(names[i], COLOR_FG, FB, 30, y + 1, 250)
             else: blit(T(names[i], COLOR_DIM, F, max_w=250), (30, y + 1))
@@ -662,16 +669,20 @@ while run:
             for lb, val in info_rows:
                 if lb: blit(T(lb, COLOR_DIM), (14, y))
                 marq(val, COLOR_FG, F, 92, y, 216); y += 18
-        yy = max(y + 8, H - BM - 76)
+        if now - svc_t > 1000: svc_t = now; svc_lines = svc_log()
+        yl = y + 10; blit(T("Service: " + ("đã nối" if got else "CHƯA NỐI"), AMB if got else COLOR_ACC, FB), (14, yl)); yl += 18
+        for ln in svc_lines:
+            for w_ in wrap(ln, 290, 2): blit(T(w_ or " ", DIM2), (14, yl)); yl += 13
+        yy = max(yl + 6, H - BM - 76)
         blit(T("Hẹn giờ ngủ", COLOR_DIM), (14, yy)); blit(T("%d phút" % sl if sl else "TẮT", AMB), (92, yy))
         centered(T("Trái/phải: đổi hẹn giờ ngủ", DIM2), yy + 18)
         centered(T("Giữ A thích · B ngẫu nhiên · C lặp lại", DIM2), yy + 36)
         centered(T("Giữ S: thoát & dừng nhạc", DIM2), yy + 54)
 
-    if CFG["dbg"] &0:
+    if CFG["dbg"]:
         t1 = "FPS %d | %s | %dx%d | bad %d" % (int(clock.get_fps()), "APK" if APK else "DEV", W, H, len(BAD))
-        blit(T(t1, (10, 10, 10)), (7, 3)); blit(T(t1, (0, 255, 128)), (6, 2))
-        blit(T(scan_status, (10, 10, 10)), (7, 17)); blit(T(scan_status, (255, 200, 0)), (6, 16))
+        #blit(T(t1, (10, 10, 10)), (7, 3)); blit(T(t1, (0, 255, 128)), (6, 2))
+        blit(T(scan_status, (10, 10, 10)), (7, 3)); blit(T(scan_status, (255, 200, 0)), (6, 2))
 
     if toast_t:                                              # thông báo nhỏ ở mọi trang
         tt = T(TOAST, (16, 16, 24), FB); rc = tt.get_rect(center=(160, H - BM - 16))
