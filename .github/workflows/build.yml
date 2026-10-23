@@ -1,0 +1,52 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v5
+
+      - uses: actions/setup-python@v6
+        with:
+          python-version: '3.10'
+
+      - name: Cài thư viện
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y git zip unzip openjdk-17-jdk autoconf libtool pkg-config zlib1g-dev libncurses5-dev libncursesw5-dev libtinfo5 cmake libffi-dev libssl-dev
+          pip install "Cython==0.29.33" buildozer virtualenv
+
+      - uses: actions/cache@v4
+        with:
+          path: ~/.buildozer
+          key: bz-music-v1-${{ hashFiles('buildozer.spec') }}
+
+      - name: Build APK
+        run: |
+          unset ANDROID_NDK_HOME ANDROID_NDK_ROOT
+          buildozer -v android debug 2>&1 | sed 's/\x1b\[[0-9;]*m//g' > build.log; r=${PIPESTATUS[0]}
+          if [ $r -ne 0 ]; then
+            echo "=== LỖI ==="
+            grep -n -E "error:|fatal error|Traceback|Error:|FAILED|No matching|not found" build.log | grep -v "#     " | tail -25
+            echo "=== 40 DÒNG TRƯỚC TRACEBACK CUỐI ==="
+            n=$(grep -n "Traceback" build.log | tail -1 | cut -d: -f1)
+            [ -n "$n" ] && sed -n "$((n-40)),$((n+5))p" build.log | cut -c1-220
+          fi
+          exit $r
+
+      - uses: actions/upload-artifact@v4
+        if: success()
+        with:
+          name: MusicPlayer_APK
+          path: bin/*.apk
+
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: build-log
+          path: build.log
