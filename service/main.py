@@ -1,12 +1,25 @@
 """service/main.py - phát nhạc nền: MediaPlayer + Foreground Service + AudioFocus + hẹn giờ ngủ.
 Chạy trong tiến trình riêng nên sống khi UI bị đóng/tắt màn hình. KHÔNG import pygame.
 IPC: UDP localhost. UI -> service cổng SP (lệnh JSON), service -> UI cổng UP (trạng thái JSON)."""
-import socket, json, time, os, random
+import socket, json, time, os, random, sys, traceback
+try: from android.storage import app_storage_path; HOME = app_storage_path()
+except Exception: HOME = os.getcwd()
+LOG = os.path.join(HOME, "svc.log")                          # UI đọc file này và hiện ở trang Thông tin
+
+
+def log(s):
+    try:
+        if os.path.exists(LOG) and os.path.getsize(LOG) > 20000: os.remove(LOG)
+        open(LOG, "a").write("%s %s\n" % (time.strftime("%H:%M:%S"), s))
+    except Exception: pass
+
+
+sys.excepthook = lambda *a: log("CRASH " + "".join(traceback.format_exception(*a))[-300:])
+log("service start")
 from jnius import autoclass, PythonJavaClass, java_method
-from android.storage import app_storage_path
 
 SP, UP = 41701, 41702
-PL = os.path.join(app_storage_path(), "playlist.json")      # UI ghi [[path, title, artist], ...]
+PL = os.path.join(HOME, "playlist.json")      # UI ghi [[path, title, artist], ...]
 Svc = autoclass("org.kivy.android.PythonService").mService
 Ctx, MP = autoclass("android.content.Context"), autoclass("android.media.MediaPlayer")
 JS, SDK = autoclass("java.lang.String"), autoclass("android.os.Build$VERSION").SDK_INT
@@ -35,6 +48,7 @@ shuf, rep = False, 1                                         # ngẫu nhiên; l�
 
 sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
 sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1); sock.bind(("127.0.0.1", SP))
+log("socket bound")
 
 
 def send(**d):
@@ -55,7 +69,7 @@ def notify():                                                # notification fore
         n = (b.setContentTitle(JS(r[1] or os.path.basename(r[0]))).setContentText(JS(r[2] or "Đang phát"))
               .setSmallIcon(Svc.getApplicationInfo().icon).setContentIntent(pi).setOngoing(True).build())
         Svc.startForeground(1, n)
-    except Exception as e: send(e="Notif: " + str(e)[:30])
+    except Exception as e: send(e="Notif: " + str(e)[:30]); log("notify: " + traceback.format_exc()[-250:])
 
 
 def setv():
@@ -76,7 +90,7 @@ def load(i, start=0):
     global cur, curp, mp, ready, paused, auto
     if not tracks: reload()
     if not tracks: send(e="Chưa có playlist"); return
-    cur = i % len(tracks); curp = tracks[cur][0]
+    cur = i % len(tracks); curp = tracks[cur][0]; log("load " + curp)
     try:                                                     # chỉ lỗi mở/giải mã file mới tính là "bài lỗi"
         if mp: mp.release()
         mp = MP(); mp.setWakeMode(Svc, 1)                    # PARTIAL_WAKE_LOCK: CPU không ngủ khi tắt màn hình
@@ -87,10 +101,11 @@ def load(i, start=0):
         mp.prepare()
         if start: mp.seekTo(int(start * 1000))               # tiếp tục đúng vị trí lần trước
         mp.start(); ready, paused, auto = True, False, False
-    except Exception as e: ready = False; send(e="Loi: " + str(e)[:34], bad=curp); return
+    except Exception as e: ready = False; send(e="Loi: " + str(e)[:34], bad=curp); log("load FAIL " + traceback.format_exc()[-250:]); return
+    log("playing")
     for f in (lambda: mp.setOnCompletionListener(done), setv, lambda: am.requestAudioFocus(focus, 3, 1), notify):
         try: f()
-        except Exception as e: send(e="Svc: " + str(e)[:30])   # phụ kiện hỏng thì vẫn phát được
+        except Exception as e: send(e="Svc: " + str(e)[:30]); log("accessory: " + traceback.format_exc()[-200:])   # phụ kiện hỏng thì vẫn phát được
 
 
 def pick():                                                  # bài kế: ngẫu nhiên (khác bài hiện tại) hoặc tuần tự
@@ -108,7 +123,7 @@ def after():                                                 # hết bài
 
 def cmd(d):
     global tracks, cur, vol, sl_at, run, paused, auto, shuf, rep
-    c = d["cmd"]
+    c = d["cmd"]; log("cmd " + c)
     if c == "pl": reload()                                   # nạp lại danh sách, giữ nguyên bài đang phát
     elif c == "play": load(d["i"], d.get("s", 0))
     elif c == "next": load(pick())
@@ -157,11 +172,11 @@ def state():
 
 try: cmd({"cmd": "pl"})                                      # service tự sống lại (sticky) -> đọc playlist cũ
 except Exception: pass
-notify()
+notify(); log("loop start, tracks=%d" % len(tracks))
 while run:
     sock.settimeout(0.25 if ready and not paused else 1.0)   # idle thì ngủ lâu, đỡ pin
     try: cmd(json.loads(sock.recv(4096)))
     except (socket.timeout, ValueError, KeyError): pass
-    except Exception as e: send(e="Svc: " + str(e)[:34])
+    except Exception as e: send(e="Svc: " + str(e)[:34]); log("loop: " + traceback.format_exc()[-250:])
     try: tick(); state()
-    except Exception as e: send(e="Tick: " + str(e)[:30])
+    except Exception as e: send(e="Tick: " + str(e)[:30]); log("tick: " + traceback.format_exc()[-250:])
