@@ -128,18 +128,34 @@ if APK: boot()
 # ====================================================================
 # MÀN HÌNH: canvas cao bằng đúng tỉ lệ màn hình => không còn dải đen trên/dưới
 # ====================================================================
+os.environ["SDL_ANDROID_TRAP_BACK_BUTTON"] = "1"                 # nút Back gửi phím về app thay vì đóng ngay
 pygame.display.init(); pygame.font.init()                    # không pygame.init(): bỏ mixer trong UI (APK)
 from touchpad import TouchPad
-W, PH = 320, 140                                           # 112 + 28px chừa lề dưới cho dải phím
+W, PH = 320, 196                                           # dải phím: hàng nút chức năng (trên) + vòng điều hướng (dưới) + lề đáy ~25px
 class Pad(TouchPad):
     def _want(s): return False, s.side                       # khoá chế độ dọc, bỏ layout ngang có 2 dải bên
-def fit_h(sw, sh): return max(400, min(720, round(W * sh / sw) - PH))
-BTNS = (("C", "", 160, 56), ("A", "", 220, 56), ("B", "", 280, 56), ("S", "", 280, 10))
+def fit_h(sw, sh): return max(400, min(900, round(W * sh / sw) - PH))
+BTNS = (("C", "", 90, 30), ("A", "", 170, 30), ("B", "", 250, 30), ("S", "", 170, 114))   # x bù +10 (touchpad trừ 10): C/A/B ở 80/160/240; S nằm giữa vòng điều hướng
+DP = (160, 114)                                              # tâm vòng điều hướng (trong dải phím)
 sw, sh = pygame.display.get_desktop_sizes()[0]
-pad = Pad(W, fit_h(sw, sh), buttons=BTNS, dpad=(70, 56), touch=True)
-if not APK:                                                  # Pydroid: cửa sổ thật khác màn hình (thanh trạng thái) -> khớp lại
-    ww, wh = pygame.display.get_surface().get_size()
-    if abs(fit_h(ww, wh) - pad.h) > 3: pad = Pad(W, fit_h(ww, wh), buttons=BTNS, dpad=(70, 56), touch=True)
+pad = Pad(W, fit_h(sw, sh), buttons=BTNS, dpad=DP, cell=32, ph=PH, touch=True)
+def win_size():                                              # cửa sổ THẬT (SCALED: display.get_size() chỉ trả kích thước logic)
+    try: return pygame.display.get_window_size()
+    except Exception: return pygame.display.get_surface().get_size()
+if APK:                                                      # ẩn thanh trạng thái/điều hướng, lấp cả vùng tai thỏ -> hết viền đen
+    try:
+        from android.runnable import run_on_ui_thread
+        @run_on_ui_thread
+        def immersive():
+            v = autoclass("android.view.View"); w = autoclass("org.kivy.android.PythonActivity").mActivity.getWindow()
+            w.getDecorView().setSystemUiVisibility(v.SYSTEM_UI_FLAG_HIDE_NAVIGATION | v.SYSTEM_UI_FLAG_FULLSCREEN | v.SYSTEM_UI_FLAG_IMMERSIVE_STICKY |
+                                                   v.SYSTEM_UI_FLAG_LAYOUT_HIDE_NAVIGATION | v.SYSTEM_UI_FLAG_LAYOUT_FULLSCREEN | v.SYSTEM_UI_FLAG_LAYOUT_STABLE)
+            at = w.getAttributes(); at.layoutInDisplayCutoutMode = 1; w.setAttributes(at)
+        immersive()
+        for _ in range(12): pygame.event.pump(); pygame.time.wait(50)    # chờ cửa sổ đổi kích thước xong
+    except Exception: pass
+ww, wh = win_size()
+if abs(fit_h(ww, wh) - pad.h) > 1: pad = Pad(W, fit_h(ww, wh), buttons=BTNS, dpad=DP, cell=32, ph=PH, touch=True)   # khớp tỉ lệ cửa sổ thật
 S, H = pad.screen, pad.h
 
 def mkfont(sz, bold=False):                                  # font hệ thống Android có đủ dấu tiếng Việt
@@ -187,6 +203,7 @@ def scanner():
     if APK:
         from android.permissions import check_permission
         P = ("android.permission.READ_MEDIA_AUDIO", "android.permission.READ_EXTERNAL_STORAGE")
+        if not any(check_permission(p) for p in P): ev.put(("toast", "Cần cấp quyền đọc nhạc để quét", 3000))
         while not any(check_permission(p) for p in P): scan_status = "Chờ cấp quyền..."; time.sleep(1)
     while True:
         scan_status = "Đang quét..."
@@ -194,8 +211,8 @@ def scanner():
             rows = [r for r in (rows_mediastore() if APK else rows_walk()) if r[0] not in BAD]
             if rows and rows != ALL:                         # quét rỗng (chưa có quyền/thẻ chưa gắn) thì giữ danh sách cũ
                 json.dump(rows, open(CACHE, "w")); ev.put(("lib", rows))
-            scan_status = "Đã nạp %d bài" % len(rows)
-        except Exception as e: scan_status = "Quét lỗi: " + str(e)[:24]
+            scan_status = "Đã nạp %d bài" % len(rows); ev.put(("scanned", len(rows)))
+        except Exception as e: scan_status = "Quét lỗi: " + str(e)[:24]; ev.put(("toast", "Quét lỗi: " + str(e)[:40], 3000))
         kick.wait(60); kick.clear()
 
 # ====================================================================
@@ -388,6 +405,8 @@ playing = paused = False; vol_t = -9999; hold = {}; used = set()
 title = artist = MSG = lsrc = ""; length = rg = pos = 0.0; st_t = 0; sl = 0
 lsync = lymode = info = lbusy = False; lyr = []; ltimes = []; minfo = info_rows = None
 TOAST = ""
+last_scan = None
+KBACK = (getattr(pygame, "K_AC_BACK", -1), pygame.K_ESCAPE); back_t = 0
 pend, got, fails, lastpl, toast_t, page = True, False, 0, 0, 0, 0
 bars, tgt = [0.0] * NB, [0.0] * NB                            # pend: tự phát bài trước đó khi mở app
 make_disc(None)
@@ -432,15 +451,15 @@ def drop_bad(p):                                             # bài lỗi: ẩn 
     if p in BAD or p not in idx: return
     fails += 1
     if fails > 3: return                                     # lỗi hàng loạt (mất quyền, thẻ nhớ...) -> đừng ẩn nhầm cả thư viện
-    i = idx[p]; BAD.add(p)
+    i = idx[p]; BAD.add(p); toast("Không phát được, đã ẩn: " + names[i][:24], 2500)
     set_lib(ALL)
     if N: tx("play", i=i % N)
 
 def send_mode(): tx("mode", sh=int(bool(CFG["shuf"])), rp=int(CFG["rep"]))
 
-def toast(s):
+def toast(s, ms=1600):
     global TOAST, toast_t
-    TOAST = s; toast_t = pygame.time.get_ticks() + 1600
+    TOAST = s; toast_t = pygame.time.get_ticks() + ms
 
 def toggle_fav(p):                                           # giữ A: thích / bỏ thích
     FAV.symmetric_difference_update({p})
@@ -478,11 +497,18 @@ def poll(now):                                               # đọc hết gói
         if not playing: tx("play", i=cur, s=rpos if 0 < rpos < length - 5 else 0)
 
 def drain():
-    global lsync, lyr, ltimes, rg, length, title, artist, lbusy, lsrc, minfo
+    global lsync, lyr, ltimes, rg, length, title, artist, lbusy, lsrc, minfo, last_scan
     while True:
         try: m = ev.get_nowait()
         except queue.Empty: break
         if m[0] == "lib": set_lib(m[1])
+        elif m[0] == "toast": toast(m[1], m[2] if len(m) > 2 else 1600)
+        elif m[0] == "scanned":
+            n = m[1]
+            if n == 0: toast("Không tìm thấy nhạc", 2500)
+            elif last_scan is None: toast("Đã quét xong: %d bài" % n, 2200)
+            elif n != last_scan: toast("Thư viện: %d bài (%+d)" % (n, n - last_scan), 2200)
+            last_scan = n
         elif m[0] == "meta" and m[1] == curp:
             mi = m[2]; rg = mi["rg"]; lsync, lyr = m[3][0], m[3][1]; lsrc = m[3][2]
             ltimes = [x[0] for x in lyr] if lsync else []; lbusy = False
@@ -490,6 +516,10 @@ def drain():
             if mi["artist"] and not artist: artist = mi["artist"]
             if mi["len"] and not length: length = mi["len"]
             minfo = mi; build_info(); make_disc(mi["art"]); setvol()
+            sr = m[3][2]                                     # kết quả tìm lyric -> thông báo rõ ràng
+            if sr.startswith("lỗi mạng"): toast("Không tải được lyric (lỗi mạng)", 2200)
+            elif not lyr: toast("Không tìm thấy lyric hợp lệ", 2200)
+            elif sr == "lrclib.net": toast("Đã tải lyric" + ("" if lsync else " (không đồng bộ)"), 2000)
 
 try: set_lib(json.load(open(CACHE)))                         # hiện ngay danh sách đã nhớ, quét ngầm sau
 except Exception: pass
@@ -509,7 +539,7 @@ SLP = (0, 15, 30, 60); slp_i = 0
 Y0, BM = 36, 26                                                      # chừa vùng tai thỏ/thanh trạng thái
 DCY, BY, TY, AY, PY, LY0 = Y0 + 46, Y0 + 112, Y0 + 126, Y0 + 148, Y0 + 182, Y0 + 216
 LN = (H - LY0 - BM) // 22                                     # số dòng danh sách hiển thị
-LT, LB = Y0 + 48, H - BM - 40                                     # vùng lời bài hát
+LT, LB = Y0 + 48, H - BM - 62                                     # vùng lời bài hát
 SLOT = 40; LCY = (LT + LB - SLOT) // 2; LSIDE = min(5, ((LB - LT) // SLOT - 1) // 2)
 
 def heart(x, y, col):
@@ -544,6 +574,10 @@ while run:
     now = get_ticks(); dt = clock.get_time()
     for e in get_events():
         if e.type == pygame.QUIT: run = False                # thoát UI, nhạc vẫn chạy nhờ service
+        elif e.type == pygame.KEYDOWN and e.key in KBACK:    # Back: trang phụ -> về trang chính; ở trang chính phải bấm 2 lần mới thoát
+            if page: page = 0; lymode = info = False
+            elif now < back_t: tx("quit"); run = False        # bấm Back 2 lần: thoát app và tắt nhạc
+            else: back_t = now + 2000; toast("Nhấn Back lần nữa để thoát và tắt nhạc", 2000)
         pad.event(e)
     poll(now); drain()
     if toast_t and now > toast_t: toast_t = 0
@@ -585,7 +619,7 @@ while run:
     for k, dv in (("left", -1), ("right", 1)):
         if k in p: hold[k] = now; used.discard(k)
         if page == 2:                                        # trang thông tin: trái/phải = hẹn giờ ngủ
-            if k in p: slp_i = (slp_i + dv) % 4; tx("sleep", m=SLP[slp_i])
+            if k in p: slp_i = (slp_i + dv) % 4; tx("sleep", m=SLP[slp_i]); toast(("Hẹn giờ ngủ: %d phút" % SLP[slp_i]) if SLP[slp_i] else "Đã tắt hẹn giờ ngủ")
             continue
         if k in pad.held and now - hold.get(k, now) > 200: used.add(k); vol = min(1.0, max(0.0, vol + dv * 0.02)); setvol(); vol_t = now
         if k in pad.released:
@@ -624,6 +658,11 @@ while run:
                     fy = int(LCY + k * SLOT - y_off) + (SLOT - lh * len(ls)) // 2
                     for q, ln in enumerate(ls): centered(T(ln or " ", col, ft, max_w=300), fy + q * lh)
             set_clip(None)
+        if sel != cur:                                       # đang chọn bài khác bài đang phát -> báo ngay trên màn lời
+            yb = H - BM - 56; draw_rect(S, (COLOR_ACC[0] // 5, COLOR_ACC[1] // 5, COLOR_ACC[2] // 5), (8, yb, 304, 22), border_radius=4)
+            draw_rect(S, COLOR_ACC, (10, yb + 5, 3, 12), border_radius=1)
+            hint = T("A: phát", AMB); blit(hint, (306 - hint.get_width(), yb + 4))
+            marq("%d/%d  %s" % (sel + 1, N, names[sel]), COLOR_FG, F, 20, yb + 4, 306 - hint.get_width() - 28)
         bar(20, H - BM - 30, 280, el / length if length else 0, COLOR_ACC)
         blit(T(mmss(el), AMB), (20, H - BM - 22))
         if length: t1 = T(mmss(length), COLOR_DIM); blit(t1, (300 - t1.get_width(), H - BM - 22))
@@ -690,7 +729,7 @@ while run:
         centered(T("Giữ S: thoát & dừng nhạc", DIM2), yy + 34)
 
     if toast_t:                                              # thông báo nhỏ ở mọi trang
-        tt = T(TOAST, (16, 16, 24), FB); rc = tt.get_rect(center=(160, H - BM - 16))
+        tt = T(TOAST, (16, 16, 24), FB, max_w=288); rc = tt.get_rect(center=(160, H - BM - 16))
         draw_rect(S, AMB, rc.inflate(18, 8), border_radius=8); blit(tt, rc)
     pad.present()
     clock.tick(60 if pad.ptr else 30)     # rảnh thì 30fps cho nhẹ pin
