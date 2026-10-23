@@ -1,7 +1,7 @@
 """main.py - UI trình nghe nhạc Pygame (portrait, lấp đầy màn hình). Cần touchpad.py cạnh file này.
 APK: phát nhạc ở service/main.py. Pydroid3: tự chuyển chế độ dev (phát bằng pygame.mixer trong UI)."""
 import pygame, os, sys, json, io, base64, re, bisect, threading, time, socket, queue, hashlib, random
-import urllib.request, urllib.parse
+import urllib.request, urllib.parse, urllib.error
 
 try: import mutagen, mutagen.flac
 except ImportError: mutagen = None
@@ -219,15 +219,29 @@ def find_lyrics(path, emb):                                  # -> (có_thời_gi
         except OSError: pass
     return parse_lyrics(emb) + ("nhúng trong file",) if emb else (False, [], "")
 
-def fetch_lyrics(p, a, t):
+CTX = None
+def ssl_ctx():                                               # APK: OpenSSL không biết kho chứng chỉ của Android -> trỏ thẳng vào đó
+    global CTX
+    if CTX: return CTX
+    import ssl
+    try: import certifi; CTX = ssl.create_default_context(cafile=certifi.where())
+    except Exception:
+        d = "/system/etc/security/cacerts"
+        CTX = ssl.create_default_context(capath=d) if os.path.isdir(d) else ssl.create_default_context()
+    return CTX
+
+def fetch_lyrics(p, a, t):                                   # -> (có_thời_gian, dòng, nguồn) hoặc chuỗi báo lỗi
     try:
         url = "https://lrclib.net/api/get?artist_name=%s&track_name=%s" % (urllib.parse.quote(a), urllib.parse.quote(t))
         req = urllib.request.Request(url, headers={"User-Agent": "MinimalistPygamePlayer/5.0"})
-        with urllib.request.urlopen(req, timeout=4) as r: d = json.loads(r.read().decode("utf-8"))
+        with urllib.request.urlopen(req, timeout=8, context=ssl_ctx()) as r: d = json.loads(r.read().decode("utf-8"))
         txt = d.get("syncedLyrics") or d.get("plainLyrics")
-        if txt:
-            open(lrc_path(p), "w", encoding="utf-8").write(txt); return parse_lyrics(txt) + ("lrclib.net",)
-    except Exception: pass
+        if not txt: return "lrclib: không có lời"
+        try: open(lrc_path(p), "w", encoding="utf-8").write(txt)
+        except OSError: pass
+        return parse_lyrics(txt) + ("lrclib.net",)
+    except urllib.error.HTTPError as e: return "lrclib: không có (%d)" % e.code
+    except Exception as e: return "lỗi mạng: " + str(e)[:40]
 
 def M0(): return dict(art=None, rg=0.0, ly="", len=0.0, title="", artist="", album="", albumartist="", date="", genre="",
                       track="", fmt="", br=0, sr=0, ch=0, bits=0)
@@ -275,7 +289,8 @@ def bg_meta(p, a, t):
     try:
         m = meta(p); ly = find_lyrics(p, m["ly"])
         a, t = m["artist"] or a, m["title"] or t
-        if not ly[1] and a and t: ly = fetch_lyrics(p, a, t) or ly
+        if not ly[1] and a and t:
+            res = fetch_lyrics(p, a, t); ly = res if isinstance(res, tuple) else (False, [], res)
     except Exception: pass
     ev.put(("meta", p, m or M0(), ly or (False, [], "")))
 
@@ -386,7 +401,7 @@ def build_info():                                            # dựng sẵn 1 l�
     rows = [("Tên", title), ("Nghệ sĩ", artist), ("Album", m["album"]), ("Năm", m["date"]), ("Thể loại", m["genre"]),
             ("Thời lượng", mmss(length) if length else ""),
             ("Định dạng", " · ".join(x for x in (m["fmt"], "%d kbps" % (m["br"] // 1000) if m["br"] else "") if x)),
-            ("Lời", lsrc + (" · đồng bộ" if lsync else "") if lyr else "không có")]
+            ("Lời", (lsrc + (" · đồng bộ" if lsync else "")) if lyr else (lsrc or "không có"))]
     rows = [(a, b) for a, b in rows if b]
     for i, ln in enumerate(wrap(curp, 220, 2)): rows.append(("Đường dẫn" if i == 0 else "", ln))
     info_rows = rows
