@@ -36,7 +36,7 @@ class TouchPad:
         if not s.on or not s.land:
             s.vo, s.view, s.pcs, s.kr, s.cl = (SM, 0), s.canvas.subsurface((SM, 0, w, h + s.ph)), [(SM, h, w, s.ph)], 20, s.cell
             s.dc = (SM + s.dp[0], h + s.dp[1])
-            s.bp = {b[0]: (SM + b[2], h + b[3]) for b in s.btn}
+            s.bp = {b[0]: (SM + b[2]-10, h + b[3]) for b in s.btn}
         else:
             s.vo, s.view, s.cl = (SM - sd, 0), s.canvas.subsurface((SM - sd, 0, w + 2 * sd, h)), min(s.cell, (sd - 8) // 3)
             s.pcs, s.dc, s.kr = [(SM - sd, 0, sd, h), (SM + w, 0, sd, h)], (SM - sd // 2, h // 2 + 28), 20
@@ -88,7 +88,7 @@ class TouchPad:
             pygame.draw.circle(ov_surf, (255, 255, 255, 15), (s.dpad_r + ox * s.dpad_r * 0.72, s.dpad_r + oy * s.dpad_r * 0.72), s.dpad_r * 0.4)
             s.ov[d] = (ov_surf, s.dpad_pos)
         for d, _, *_ in s.btn:
-            is_play = (d == "A"); tr = r + 4 if is_play else r
+            is_play = (d == "A"); tr = r + 4 if is_play else (r - 4 if d == "S" else r)
             L = []
             for col, icol in (((18, 18, 24), (180, 180, 200)), ((36, 36, 46), (255, 255, 255))):
                 L.append((s._draw_aa_button(d, tr, col, (40, 40, 50), icol, False), tr))
@@ -116,6 +116,13 @@ class TouchPad:
     def show(s, v):
         if v != s.on: s.on = v; s._mode()
 
+    def _fp(s, x, y):                                        # ngón tay (0..1 theo cửa sổ thật) -> toạ độ logic; bù viền đen của SCALED
+        lw, lh = pygame.display.get_surface().get_size()
+        try: ww, wh = pygame.display.get_window_size()
+        except Exception: ww, wh = lw, lh
+        k = min(ww / lw, wh / lh)
+        return s._cc((x * ww - (ww - lw * k) / 2) / k, (y * wh - (wh - lh * k) / 2) / k)
+
     def _cc(s, x, y): sc, ox, oy = s.vp; return (x - ox) / sc + s.vo[0], (y - oy) / sc + s.vo[1]
 
     def event(s, e):
@@ -124,13 +131,11 @@ class TouchPad:
             if not s._fs: s._fs = True; s.ptr.pop("m", None)
             s.show(True); s._layout()
             if t == pygame.FINGERDOWN:
-                ww, wh = pygame.display.get_surface().get_size()
-                pos = s._cc(e.x * ww, e.y * wh)
+                pos = s._fp(e.x, e.y)
                 s.ptr[e.finger_id] = pos
                 s.swipe_start[e.finger_id] = pos
             elif t == pygame.FINGERMOTION and e.finger_id in s.ptr:
-                ww, wh = pygame.display.get_surface().get_size()
-                s.ptr[e.finger_id] = s._cc(e.x * ww, e.y * wh)
+                s.ptr[e.finger_id] = s._fp(e.x, e.y)
             elif t == pygame.FINGERUP:
                 if e.finger_id in s.swipe_start:
                     start_x, start_y = s.swipe_start[e.finger_id]
@@ -154,7 +159,7 @@ class TouchPad:
         for x, y in s.ptr.values():
             if SM <= x < SM + s.w and y < s.h: continue
             for n, (bx, by) in s.bp.items():
-                if (x - bx)**2 + (y - by)**2 < hr_sq: 
+                if (x - bx)**2 + (y - by)**2 < ((s.dpad_r * 0.45)**2 if n == "S" else hr_sq): 
                     out.add(n); break
             else:
                 dx, dy = x - px, y - py
