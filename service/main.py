@@ -39,7 +39,16 @@ class Focus(PythonJavaClass):                                # cuộc gọi / ap
     def onAudioFocusChange(self, c): fev.append(c)
 
 
-nxt, fev = [], []
+class Recv(PythonJavaClass):                                 # nhận bấm nút trên thông báo (Trước / Phát-Dừng / Sau)
+    __javainterfaces__ = ["org/kivy/android/GenericBroadcastReceiverCallback"]
+    __javacontext__ = "app"
+    @java_method("(Landroid/content/Context;Landroid/content/Intent;)V")
+    def onReceive(self, ctx, intent): acts.append(str(intent.getAction()))
+
+
+nxt, fev, acts = [], [], []
+ACTS = {"PREV": "prev", "TOGGLE": "toggle", "NEXT": "next"}
+PKG = str(Svc.getPackageName()) + ".MP_"
 done, focus = Done(), Focus()                                # giữ tham chiếu toàn cục, tránh bị GC
 am = Svc.getSystemService(Ctx.AUDIO_SERVICE)
 tracks, cur, curp, mp = [], 0, "", None
@@ -56,7 +65,19 @@ def send(**d):
     except OSError: pass
 
 
-def notify():                                                # notification foreground, bấm vào mở lại app
+def setup_receiver():
+    global recv, rcv
+    try:
+        recv = Recv(); rcv = autoclass("org.kivy.android.GenericBroadcastReceiver")(recv)   # giữ tham chiếu toàn cục
+        f = autoclass("android.content.IntentFilter")()
+        for a in ACTS: f.addAction(JS(PKG + a))
+        if SDK >= 33: Svc.registerReceiver(rcv, f, 4)        # RECEIVER_NOT_EXPORTED
+        else: Svc.registerReceiver(rcv, f)
+        log("receiver ok")
+    except Exception: log("receiver FAIL " + traceback.format_exc()[-250:])
+
+
+def notify():                                                # notification foreground: tên bài + nút Trước / Phát-Dừng / Sau
     try:
         r = tracks[cur] if tracks else ["", "Nghe Nhạc", ""]
         B = autoclass("android.app.Notification$Builder")
@@ -66,9 +87,19 @@ def notify():                                                # notification fore
         else: b = B(Svc)
         it = Svc.getPackageManager().getLaunchIntentForPackage(Svc.getPackageName())
         pi = autoclass("android.app.PendingIntent").getActivity(Svc, 0, it, 0x0C000000)   # IMMUTABLE|UPDATE_CURRENT
-        n = (b.setContentTitle(JS(r[1] or os.path.basename(r[0]))).setContentText(JS(r[2] or "Đang phát"))
-              .setSmallIcon(Svc.getApplicationInfo().icon).setContentIntent(pi).setOngoing(True).build())
-        Svc.startForeground(1, n)
+        b = (b.setContentTitle(JS(r[1] or os.path.basename(r[0]))).setContentText(JS(r[2] or ("Tạm dừng" if paused else "Đang phát")))
+              .setSmallIcon(Svc.getApplicationInfo().icon).setContentIntent(pi).setOngoing(True).setVisibility(1))   # 1 = hiện cả trên màn hình khoá
+        try:                                                 # nút điều khiển; hỏng thì vẫn có thông báo thường
+            Rd, PI, In = autoclass("android.R$drawable"), autoclass("android.app.PendingIntent"), autoclass("android.content.Intent")
+            playing = ready and not paused
+            for i, (a, ic, lb) in enumerate((("PREV", Rd.ic_media_previous, "Trước"),
+                                             ("TOGGLE", Rd.ic_media_pause if playing else Rd.ic_media_play, "Dừng" if playing else "Phát"),
+                                             ("NEXT", Rd.ic_media_next, "Sau"))):
+                ii = In(JS(PKG + a)); ii.setPackage(Svc.getPackageName())
+                b.addAction(ic, JS(lb), PI.getBroadcast(Svc, i + 1, ii, 0x0C000000))
+            ms = autoclass("android.app.Notification$MediaStyle")(); ms.setShowActionsInCompactView([0, 1, 2]); b.setStyle(ms)
+        except Exception: log("notify actions: " + traceback.format_exc()[-250:])
+        Svc.startForeground(1, b.build())
     except Exception as e: send(e="Notif: " + str(e)[:30]); log("notify: " + traceback.format_exc()[-250:])
 
 
@@ -148,17 +179,20 @@ def cmd(d):
 def tick():
     global paused, auto, duck, sl_at
     if nxt: nxt.clear(); after()
+    while acts:                                              # bấm nút trên thông báo / màn hình khoá
+        a = acts.pop(0)[len(PKG):]
+        if a in ACTS: cmd({"cmd": ACTS[a]})
     while fev:
         c = fev.pop(0)
         if c == 1:                                           # GAIN: lấy lại âm thanh
             duck = 1.0; setv()
-            if auto and ready: mp.start(); paused, auto = False, False
+            if auto and ready: mp.start(); paused, auto = False, False; notify()
         elif c == -3: duck = 0.3; setv()                     # CAN_DUCK: hạ nhỏ
         elif c in (-1, -2) and ready and not paused:         # LOSS / LOSS_TRANSIENT: tạm dừng
-            mp.pause(); paused, auto = True, c == -2
+            mp.pause(); paused, auto = True, c == -2; notify()
     if sl_at and time.time() >= sl_at:
         sl_at = 0
-        if ready and not paused: mp.pause(); paused = True
+        if ready and not paused: mp.pause(); paused = True; notify()
 
 
 def state():
@@ -172,7 +206,7 @@ def state():
 
 try: cmd({"cmd": "pl"})                                      # service tự sống lại (sticky) -> đọc playlist cũ
 except Exception: pass
-notify(); log("loop start, tracks=%d" % len(tracks))
+setup_receiver(); notify(); log("loop start, tracks=%d" % len(tracks))
 while run:
     sock.settimeout(0.25 if ready and not paused else 1.0)   # idle thì ngủ lâu, đỡ pin
     try: cmd(json.loads(sock.recv(4096)))
