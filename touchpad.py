@@ -10,13 +10,15 @@ class TouchPad:
         s.w, s.h, s.ph, s.sc0, s.btn, s.cell, s.on = w, h, ph, scale, buttons or [], cell, None
         s.dp = dpad or (cell * 3 // 2 + 16, ph // 2)
         s.ptr, s.held, s.pressed, s.released = {}, set(), set(), set()
-        s.st = {} 
-        s.swipe_start = {} 
+        s.st = {}
+        s.swipe_start = {}
+        s._sw = set()                                        # vuốt B/C chờ update() xử lý
+        s._pk = None                                         # khoá cache dải phím
         s.vp, s._dst, s._fs, s.canvas = (1.0, 0, 0), None, False, None
         s.land, s.side, s.vo, s.view, s.bgs, s.ov, s.bt, s.bp, s.pcs = False, SIDE, (SM, 0), None, [], {}, {}, {}, []
         s.kr, s.cl, s.dc = 20, cell, (0, 0)
         s.lr = False
-        
+
         s.show(touch)
         s.canvas = pygame.Surface((w + 2 * SM, h + ph)).convert()
         s.screen = s.canvas.subsurface((SM, 0, w, h))
@@ -44,23 +46,23 @@ class TouchPad:
             s.bp = {"C": (cx, cy - 56), "A": (cx, cy), "B": (cx, cy + 56), "S": (cx, 28)}
 
     def _draw_aa_button(s, name, r, bg_color, border_color, icon_color, is_pause=False):
-        tr = r * 2 
+        tr = r * 2
         surf = pygame.Surface((tr * 2, tr * 2), pygame.SRCALPHA)
         pygame.draw.circle(surf, bg_color, (tr, tr), tr)
         pygame.draw.circle(surf, border_color, (tr, tr), tr, 1)
         cx, cy = tr, tr
-        if name == "A": 
+        if name == "A":
             if is_pause:
                 pygame.draw.rect(surf, icon_color, (cx-5, cy-6, 3, 12), border_radius=1)
                 pygame.draw.rect(surf, icon_color, (cx+2, cy-6, 3, 12), border_radius=1)
             else: pygame.draw.polygon(surf, icon_color, [(cx-4, cy-7), (cx-4, cy+7), (cx+6, cy)])
-        elif name == "B": 
+        elif name == "B":
             pygame.draw.polygon(surf, icon_color, [(cx-6, cy-5), (cx-6, cy+5), (cx+2, cy)])
             pygame.draw.polygon(surf, icon_color, [(cx+2, cy-5), (cx+2, cy+5), (cx+10, cy)])
-        elif name == "C": 
+        elif name == "C":
             pygame.draw.polygon(surf, icon_color, [(cx+6, cy-5), (cx+6, cy+5), (cx-2, cy)])
             pygame.draw.polygon(surf, icon_color, [(cx-2, cy-5), (cx-2, cy+5), (cx-10, cy)])
-        elif name == "S": 
+        elif name == "S":
             pygame.draw.rect(surf, icon_color, (cx-6, cy-4, 12, 1), border_radius=1)
             pygame.draw.rect(surf, icon_color, (cx-6, cy,   12, 1), border_radius=1)
             pygame.draw.rect(surf, icon_color, (cx-6, cy+4, 12, 1), border_radius=1)
@@ -78,6 +80,7 @@ class TouchPad:
         return pygame.transform.smoothscale(surf, (r_real * 2, r_real * 2)), r_real
 
     def _build(s):
+        s._pk = None                                         # buộc vẽ lại dải phím
         s._place(); s.ov, s.bt = {}, {}
         if not s.on: return
         n, r, (px, py) = s.cl, s.kr, s.dc
@@ -125,11 +128,11 @@ class TouchPad:
 
     def _cc(s, x, y): sc, ox, oy = s.vp; return (x - ox) / sc + s.vo[0], (y - oy) / sc + s.vo[1]
 
-    def event(s, e):
+    def event(s, e):                                         # s.vp do present()/_mode() giữ, không gọi _layout() ở đây
         t = e.type
         if t in _TOUCH:
             if not s._fs: s._fs = True; s.ptr.pop("m", None)
-            s.show(True); s._layout()
+            s.show(True)
             if t == pygame.FINGERDOWN:
                 pos = s._fp(e.x, e.y)
                 s.ptr[e.finger_id] = pos
@@ -141,14 +144,13 @@ class TouchPad:
                     start_x, start_y = s.swipe_start[e.finger_id]
                     end_x, end_y = s.ptr.get(e.finger_id, (start_x, start_y))
                     dx, dy = end_x - start_x, end_y - start_y
-                    if max(abs(dx), abs(dy)) > 50 and end_x > SM + 60: 
-                        if abs(dx) > abs(dy): s.pressed.add("B" if dx < 0 else "C")
+                    if max(abs(dx), abs(dy)) > 50 and end_x > SM + 60:
+                        if abs(dx) > abs(dy): s._sw.add("B" if dx < 0 else "C")
                     del s.swipe_start[e.finger_id]
                 s.ptr.pop(e.finger_id, None)
         elif t in _MOUSE:
             if getattr(e, "touch", False) and not s._fs: s.show(True)
             if not s.on: return
-            s._layout()
             if t == pygame.MOUSEBUTTONUP: s.ptr.pop("m", None)
             elif (t == pygame.MOUSEBUTTONDOWN and e.button == 1) or (t == pygame.MOUSEMOTION and e.buttons[0] and "m" in s.ptr):
                 s.ptr["m"] = s._cc(*e.pos)
@@ -159,7 +161,7 @@ class TouchPad:
         for x, y in s.ptr.values():
             if SM <= x < SM + s.w and y < s.h: continue
             for n, (bx, by) in s.bp.items():
-                if (x - bx)**2 + (y - by)**2 < ((s.dpad_r * 0.45)**2 if n == "A" else hr_sq): 
+                if (x - bx)**2 + (y - by)**2 < ((s.dpad_r * 0.45)**2 if n == "A" else hr_sq):
                     out.add(n); break
             else:
                 dx, dy = x - px, y - py
@@ -169,24 +171,28 @@ class TouchPad:
 
     def update(s):
         now = s._read() if s.on else set()
-        s.pressed, s.released, s.held = now - s.held, s.held - now, now
+        sw, s._sw = s._sw, set()                             # vuốt = bấm + nhả trong 1 frame
+        s.pressed, s.released, s.held = (now - s.held) | sw, (s.held - now) | sw, now
 
     def present(s):
         if s.on and s._want()[0] != s.land: s._mode()
         win, view, wsz, sz = s._layout()
         if s.on:
-            c = s.canvas
-            for (rx, ry, rw, rh) in s.pcs: c.fill((12, 12, 16), (rx, ry, rw, rh))
-            c.blit(s.dpad_base, s.dpad_pos)
-            for n in s.held:
-                if n in s.ov: c.blit(*s.ov[n])
-            for n, (L, x, y) in s.bt.items():
-                base_idx = s.st.get(n, 0)
-                idx = base_idx + (1 if n in s.held else 0)
-                surf, tr = L[idx if idx < len(L) else (1 if n in s.held else 0)]
-                c.blit(surf, (x - tr, y - tr))
+            k2 = (frozenset(s.held), tuple(s.st.items()))
+            if k2 != s._pk:                                  # chỉ vẽ lại dải phím khi trạng thái đổi
+                s._pk = k2; c = s.canvas
+                for (rx, ry, rw, rh) in s.pcs: c.fill((12, 12, 16), (rx, ry, rw, rh))
+                c.blit(s.dpad_base, s.dpad_pos)
+                for n in s.held:
+                    if n in s.ov: c.blit(*s.ov[n])
+                for n, (L, x, y) in s.bt.items():
+                    idx = s.st.get(n, 0) + (1 if n in s.held else 0)
+                    surf, tr = L[idx if idx < len(L) else (1 if n in s.held else 0)]
+                    c.blit(surf, (x - tr, y - tr))
         k = (sz, wsz, s.on, s.land, win)
         if not s._dst or s._dst[0] != k:
             win.fill((12, 12, 16)); s._dst = (k, win.subsurface((s.vp[1], s.vp[2], *sz)))
         if sz[0] > 0 and sz[1] > 0:
-            pygame.transform.scale(view, sz, s._dst[1]); pygame.display.flip()
+            if sz == view.get_size(): win.blit(view, (s.vp[1], s.vp[2]))   # SCALED: GPU phóng to, CPU chỉ copy 1:1
+            else: pygame.transform.scale(view, sz, s._dst[1])
+            pygame.display.flip()
